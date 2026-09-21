@@ -84,6 +84,10 @@ MIN_CELL = 45.0
 MIN_RECESS_FRACTION = 0.62
 #: A compartment longer than this many times its width reads as a slot.
 MAX_CELL_ASPECT = 4.5
+#: How much of an end's straight run a grip scallop may occupy.  A scallop is
+#: a detail bitten out of a flat edge; when it is as wide as the flat itself
+#: it stops reading as a grip and starts reading as a waist.
+SCALLOP_RUN_FRACTION = 0.9
 #: Smallest rim that can carry an INFO label, in mm.
 MIN_LABEL_RIM = 12.0
 
@@ -278,6 +282,15 @@ def _scalloped(outline: Ring, params: TrayParams) -> Ring:
             f"scallop opening {opening:g} mm leaves too little edge on a "
             f"{width:g} mm wide tray"
         )
+    run = _end_straight_run(outline)
+    if opening > run * SCALLOP_RUN_FRACTION:
+        raise ValueError(
+            f"a {opening:g} mm scallop needs a straight end to bite into, but "
+            f"this outline only runs straight for {run:.0f} mm; a scallop wider "
+            f"than the flat it sits in eats the whole end and the tray reads as "
+            f"a dog bone. Use a narrower scallop, the "
+            f"{TrayStyle.ROUNDED.value} style, or a different handle"
+        )
     poly = geo.polygon_from_ring(outline)
     for cx in (depth - radius, params.length - depth + radius):
         bite = geo.polygon_from_ring(geo.circle_ring(cx, width / 2.0, radius))
@@ -286,6 +299,25 @@ def _scalloped(outline: Ring, params: TrayParams) -> Ring:
         raise ValueError("scallops split the tray outline")
     ring = geo.ensure_ccw(geo.dedupe(list(poly.exterior.coords)))
     return geo.round_concave(ring, max(4.0, params.tool_diameter * 0.8))
+
+
+def _end_straight_run(ring: Ring, tolerance: float = 0.5) -> float:
+    """Length of the flat section at the narrow end of an outline.
+
+    Measured as the span of the boundary that lies within ``tolerance`` of the
+    outline's minimum x.  A rounded rectangle runs straight for most of its
+    end; a pill is curved the whole way and returns almost nothing.
+
+    Args:
+        ring: The outline.
+        tolerance: How far from the extreme edge still counts as flat, in mm.
+
+    Returns:
+        The straight run in mm, 0.0 if there is no flat at all.
+    """
+    x0 = min(point[0] for point in ring)
+    ys = [point[1] for point in ring if point[0] <= x0 + tolerance]
+    return max(ys) - min(ys) if len(ys) > 1 else 0.0
 
 
 def _split(lo: float, hi: float, weights: Sequence[float], gap: float) -> list[tuple[float, float]]:
@@ -489,11 +521,20 @@ class TrayGenerator(Generator):
         border = params.resolved_border()
         divider = params.resolved_divider()
 
-        outline = _outline(params)
-        if params.handle is HandleStyle.SCALLOP:
-            outline = _scalloped(outline, params)
+        # The recess is laid out from the base outline, before any scallop is
+        # bitten out of it.  Offsetting the scalloped outline instead makes the
+        # end compartments inherit the scallop's curve and come out waisted,
+        # which reads as a mistake rather than a detail.  The rim is wide
+        # enough that the scallop still leaves min_wall to the recess, because
+        # required_border() derives it that way.
+        base_outline = _outline(params)
+        outline = (
+            _scalloped(base_outline, params)
+            if params.handle is HandleStyle.SCALLOP
+            else base_outline
+        )
 
-        envelopes = geo.offset_ring(outline, -border, join="round")
+        envelopes = geo.offset_ring(base_outline, -border, join="round")
         if len(envelopes) != 1:
             raise ValueError(
                 f"a {border:g} mm rim leaves no single recess area on a "
@@ -662,20 +703,23 @@ class TrayGenerator(Generator):
         # the recess dominant, so only trays above a certain width can wear a
         # cutout handle at all.
         widest_handle = (1.0 - MIN_RECESS_FRACTION) / 2.0 * width - 2.0 * 8.0
+        # A scallop needs a flat end to bite into, which only the rounded and
+        # soft outlines have; see SCALLOP_RUN_FRACTION.
+        scallop_ok = style is not TrayStyle.PILL
         if widest_handle >= 30.0:
-            handle = rng.choice(
-                [
-                    HandleStyle.CUTOUT,
-                    HandleStyle.CUTOUT,
-                    HandleStyle.CUTOUT,
-                    HandleStyle.SCALLOP,
-                    HandleStyle.NONE,
-                ]
-            )
+            choices = [HandleStyle.CUTOUT] * 3 + [HandleStyle.NONE]
+            if scallop_ok:
+                choices.append(HandleStyle.SCALLOP)
         else:
-            handle = rng.choice(
-                [HandleStyle.SCALLOP, HandleStyle.SCALLOP, HandleStyle.NONE]
-            )
+            choices = [HandleStyle.NONE]
+            if scallop_ok:
+                choices += [HandleStyle.SCALLOP, HandleStyle.SCALLOP]
+        handle = rng.choice(choices)
+        scallop_width = float(
+            rng.randrange(40, 100, 10)
+            if style is TrayStyle.ROUNDED
+            else rng.randrange(40, 56, 4)
+        )
         handle_width = float(rng.randrange(30, max(32, int(min(44, widest_handle))) + 1, 2))
         thickness = rng.choice([19.0, 19.0, 25.0, 18.0])
         depth = rng.choice([6.0, 8.0, 8.0, 10.0, 12.0])
@@ -694,7 +738,7 @@ class TrayGenerator(Generator):
             handle_length=float(rng.randrange(90, 160, 10)),
             handle_width=handle_width,
             scallop_depth=float(rng.randrange(10, 20, 2)),
-            scallop_width=float(rng.randrange(50, 100, 10)),
+            scallop_width=scallop_width,
             engrave_border=rng.random() < 0.35,
             engrave_inset=float(rng.randrange(4, 12, 2)),
             material=rng.choice(["oak", "walnut", "maple", "birch plywood", "cherry"]),

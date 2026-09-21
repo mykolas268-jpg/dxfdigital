@@ -49,8 +49,14 @@ def gen() -> TrayGenerator:
 def test_every_combination_validates(
     gen: TrayGenerator, style: TrayStyle, layout: Layout, handle: HandleStyle
 ) -> None:
+    if style is TrayStyle.PILL and handle is HandleStyle.SCALLOP:
+        pytest.skip(
+            "a pill outline has no flat end for a scallop to bite into; "
+            "refusing that pair is tested separately"
+        )
     design = gen.make(
-        style=style, layout=layout, handle=handle, length=520, width=330
+        style=style, layout=layout, handle=handle, length=520, width=330,
+        scallop_width=44,
     )
     report = gen.check(design)
     assert report.ok, report.format()
@@ -73,17 +79,17 @@ def test_derived_width_follows_the_golden_ratio_and_is_whole(gen: TrayGenerator)
 
 def test_quoted_dimensions_match_the_geometry(gen: TrayGenerator) -> None:
     """Scallops shorten the outline, so the name must follow the geometry."""
-    # A pill outline touches its bounding box at one point per end, exactly
-    # where the scallop bites, so the overall length really does shrink.  On a
-    # rounded rectangle the straight edge holds the box out and it does not.
+    # A soft outline touches its bounding box over a very short run, which the
+    # scallop bites straight through, so the overall length really does shrink.
+    # On a rounded rectangle the long straight edge holds the box out.
     design = gen.make(
-        length=300, width=200, style=TrayStyle.PILL, handle=HandleStyle.SCALLOP,
-        scallop_depth=15, scallop_width=70,
+        length=400, width=260, style=TrayStyle.SOFT, handle=HandleStyle.SCALLOP,
+        scallop_depth=12, scallop_width=40,
     )
     real = f"{design.size()[0]:.0f} x {design.size()[1]:.0f} mm"
     assert real in design.name
     assert real in design.description
-    assert design.size()[0] < 300.0  # the scallops really did bite
+    assert design.size()[0] < 400.0  # the scallops really did bite
 
 
 def test_a_rim_that_would_dominate_the_tray_is_refused() -> None:
@@ -181,6 +187,39 @@ def test_scallops_stay_machinable(gen: TrayGenerator) -> None:
     )
     report = gen.check(design)
     assert "E_PROFILE_TOO_TIGHT" not in {i.code for i in report.issues}
+
+
+def test_a_scallop_needs_a_flat_end_to_bite_into(gen: TrayGenerator) -> None:
+    """Otherwise it eats the whole end and the tray reads as a dog bone."""
+    with pytest.raises(ValueError, match="straight end to bite into"):
+        gen.make(
+            length=400, width=260, style=TrayStyle.PILL, handle=HandleStyle.SCALLOP,
+            scallop_width=40,
+        )
+    with pytest.raises(ValueError, match="straight end to bite into"):
+        gen.make(
+            length=400, width=260, style=TrayStyle.SOFT, handle=HandleStyle.SCALLOP,
+            scallop_width=70,
+        )
+    # The rounded outline runs straight for most of its end, so it is fine.
+    assert gen.make(
+        length=400, width=260, style=TrayStyle.ROUNDED, handle=HandleStyle.SCALLOP,
+        scallop_width=70,
+    )
+
+
+def test_the_straight_run_measurement_separates_the_outline_styles() -> None:
+    from dxfgen.niches.trays import _end_straight_run, _outline
+
+    runs = {
+        style: _end_straight_run(
+            _outline(TrayParams(length=400, width=260, style=style))
+        )
+        for style in TrayStyle
+    }
+    assert runs[TrayStyle.ROUNDED] > 200.0
+    assert 20.0 < runs[TrayStyle.SOFT] < 80.0
+    assert runs[TrayStyle.PILL] < 20.0
 
 
 def test_a_scallop_too_tight_for_the_cutter_is_refused(gen: TrayGenerator) -> None:
