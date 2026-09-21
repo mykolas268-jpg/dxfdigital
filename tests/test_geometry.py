@@ -456,22 +456,37 @@ def test_router_slot_width_carries_clearance_only() -> None:
     assert g.joint_slot_width(18.0, "router", clearance=0.0) == pytest.approx(18.0)
 
 
-def test_laser_slot_width_is_reduced_by_one_kerf() -> None:
-    # Drawn 2.85 mm, the beam removes 0.15 mm, so the finished slot is 3.00 mm
-    # and 3 mm material press-fits.
-    assert g.joint_slot_width(3.0, "laser", clearance=0.0, kerf=0.15) == pytest.approx(
-        2.85
-    )
-    assert g.joint_slot_width(6.0, "laser", clearance=0.1, kerf=0.2) == pytest.approx(
-        5.9
-    )
+def test_slot_width_is_nominal_on_both_machines() -> None:
+    """Kerf belongs to the whole part, not to the slot; see the docstring."""
+    assert g.joint_slot_width(3.0, "laser", clearance=0.0) == pytest.approx(3.0)
+    assert g.joint_slot_width(3.0, "router", clearance=0.0) == pytest.approx(3.0)
+    assert g.joint_slot_width(6.0, "laser", clearance=0.1) == pytest.approx(6.1)
 
 
-def test_laser_slot_width_finished_size_hits_nominal() -> None:
-    thickness, kerf, clearance = 3.0, 0.15, 0.0
-    drawn = g.joint_slot_width(thickness, "laser", clearance, kerf)
-    finished = drawn + kerf
-    assert finished == pytest.approx(thickness + clearance)
+def test_kerf_compensation_makes_a_tab_and_its_slot_both_finish_on_size() -> None:
+    """The point of compensating the whole part rather than just the slot.
+
+    Correcting the slot alone leaves the joint a full kerf loose, because the
+    laser takes the same kerf off the tab.
+    """
+    kerf, thickness, clearance = 0.15, 3.0, 0.2
+    nominal_slot = g.joint_slot_width(thickness, "laser", clearance)
+
+    # The slot is a cutout, so it is drawn small and burns out to size.
+    drawn_slot = g.kerf_compensate_ring(
+        g.rect_ring(nominal_slot, 40.0), kerf, outward=False
+    )[0]
+    finished_slot = g.size_of(drawn_slot)[0] + kerf
+
+    # The tab is part of an outline, so it is drawn large and burns down.
+    drawn_tab = g.kerf_compensate_ring(
+        g.rect_ring(thickness, 40.0), kerf, outward=True
+    )[0]
+    finished_tab = g.size_of(drawn_tab)[0] - kerf
+
+    assert finished_slot == pytest.approx(thickness + clearance)
+    assert finished_tab == pytest.approx(thickness)
+    assert finished_slot - finished_tab == pytest.approx(clearance)
 
 
 def test_slot_width_rejects_bad_input() -> None:
@@ -479,8 +494,6 @@ def test_slot_width_rejects_bad_input() -> None:
         g.joint_slot_width(18, "plasma")
     with pytest.raises(ValueError):
         g.joint_slot_width(0, "router")
-    with pytest.raises(ValueError):
-        g.joint_slot_width(0.1, "laser", clearance=0.0, kerf=0.5)
 
 
 @pytest.mark.parametrize("length", [60.0, 120.0, 300.0, 47.5])

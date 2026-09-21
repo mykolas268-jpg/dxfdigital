@@ -45,18 +45,34 @@ def test_router_mortises_carry_the_fit_clearance(thickness: float) -> None:
 
 
 @pytest.mark.parametrize("thickness", [3.0, 6.0])
-def test_laser_mortises_are_drawn_one_kerf_narrower(thickness: float) -> None:
-    """Drawn small, burnt out to size: the finished slot is what matters."""
-    params = StandParams(**laser(thickness=thickness, kerf=0.15, clearance=0.2))
-    drawn = params.mortise_width()
-    assert drawn == pytest.approx(thickness + 0.2 - 0.15)
-    assert drawn + 0.15 == pytest.approx(thickness + 0.2)
+def test_both_halves_of_a_laser_joint_finish_on_size(
+    gen: StandGenerator, thickness: float
+) -> None:
+    """The tab matters as much as the mortise.
+
+    Compensating only the mortise leaves the joint a full kerf loose, because
+    the beam takes the same kerf off the tab it goes into.
+    """
+    kerf, clearance = 0.15, 0.2
+    kwargs = laser(thickness=thickness, kerf=kerf, clearance=clearance)
+    design = gen.make(**kwargs)
+    params = StandParams(**kwargs)
+    base = next(p for p in design.parts if p.name == "base")
+    back = next(p for p in design.parts if p.name == "back")
+
+    finished_mortise = geo.size_of(base.holes[0])[0] + kerf
+    lowest = min(y for _, y in back.outline)
+    tab_edge = sorted(x for x, y in back.outline if abs(y - lowest) < 1e-6)
+    finished_tab = (tab_edge[1] - tab_edge[0]) - kerf
+
+    assert finished_mortise == pytest.approx(thickness + clearance, abs=0.01)
+    assert finished_tab == pytest.approx(params.tab_width, abs=0.01)
 
 
-def test_the_finished_fit_is_the_same_on_both_machines() -> None:
-    cut = StandParams(thickness=18.0, base_depth=120).mortise_width()
+def test_the_finished_fit_is_the_same_on_both_machines(gen: StandGenerator) -> None:
+    cut = StandParams(thickness=18.0, base_depth=120)
     burn = StandParams(**laser(thickness=3.0))
-    assert cut - 18.0 == pytest.approx(burn.mortise_width() + burn.kerf - 3.0)
+    assert cut.mortise_width() - 18.0 == pytest.approx(burn.mortise_width() - 3.0)
 
 
 def test_tabs_protrude_by_exactly_one_material_thickness(gen: StandGenerator) -> None:

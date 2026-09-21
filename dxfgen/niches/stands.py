@@ -27,7 +27,16 @@ from pydantic import Field, model_validator
 from ..core import geometry as geo
 from ..core.design import Design, Label, Part
 from ..core.geometry import Ring
-from .base import Generator, GeneratorParams, arrange_grid, cutting_order_for, slugify, smallest_stock
+from .base import (
+    Generator,
+    GeneratorParams,
+    apply_kerf,
+    arrange_grid,
+    cutting_order_for,
+    material_phrase,
+    slugify,
+    smallest_stock,
+)
 
 __all__ = ["StandSize", "StandParams", "StandGenerator"]
 
@@ -339,11 +348,17 @@ class StandGenerator(Generator):
         Raises:
             ValueError: If the parameters are geometrically incompatible.
         """
-        parts = [
-            _base_part(params),
-            Part(name="back", outline=_upright_ring(params, params.resolved_back_height())),
-            _lip_part(params),
-        ]
+        parts = apply_kerf(
+            [
+                _base_part(params),
+                Part(
+                    name="back",
+                    outline=_upright_ring(params, params.resolved_back_height()),
+                ),
+                _lip_part(params),
+            ],
+            params,
+        )
         arrange_grid(parts, params.gap, columns=2)
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
@@ -377,9 +392,9 @@ class StandGenerator(Generator):
         machine = params.machine()
         if machine.is_laser:
             fit = (
-                f"mortises are drawn {params.mortise_width():.2f} mm wide so "
-                f"they finish at {params.thickness + params.clearance:.2f} mm "
-                f"once the {params.kerf:g} mm kerf is burnt away"
+                f"every outline is grown and every cutout shrunk by half the "
+                f"{params.kerf:g} mm kerf, so tabs and mortises both finish on "
+                f"size and the joint closes to {params.clearance:g} mm"
             )
         else:
             fit = (
@@ -389,7 +404,8 @@ class StandGenerator(Generator):
             )
         return (
             f"A three-part slot-together {params.size.value} dock in "
-            f"{params.thickness:g} mm {params.material}. The device stands in a "
+            f"{material_phrase(params.thickness, params.material)}. The device "
+            f"stands in a "
             f"{params.device_gap:g} mm channel between the lip and the back. No "
             f"glue and no fasteners: the {fit}."
         )
@@ -407,8 +423,9 @@ class StandGenerator(Generator):
         ]
         if params.machine().is_laser:
             notes.append(
-                f"Kerf is compensated at {params.kerf:g} mm. Cut one mortise as "
-                f"a test first if your machine runs wider."
+                f"Kerf is compensated at {params.kerf:g} mm across the whole "
+                f"part, tabs included. Cut one mortise as a test first if your "
+                f"machine runs wider."
             )
         if params.cable_slot:
             notes.append(
@@ -440,9 +457,9 @@ class StandGenerator(Generator):
             mode="laser" if laser else "router",
             thickness=thickness,
             material=(
-                rng.choice(["3 mm birch ply", "6 mm birch ply", "6 mm acrylic"])
+                rng.choice(["birch ply", "acrylic"])
                 if laser
-                else rng.choice(["18 mm birch plywood", "12 mm oak", "18 mm walnut"])
+                else rng.choice(["birch plywood", "oak", "walnut"])
             ),
             min_wall=5.0 if laser else 8.0,
             pocket_floor=2.0 if laser else 5.0,

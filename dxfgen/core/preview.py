@@ -173,8 +173,16 @@ def render_preview(
     frame = (bbox[0], bbox[1] - caption_space, bbox[2], bbox[3])
     fig, ax = _figure(frame, margin, px_width, dpi, _PREVIEW_BACKGROUND)
 
-    line = max(span / 900.0, 0.12)
+    # Line width is in points, so it must come from the figure size rather
+    # than from millimetres: a millimetre-derived width is hairline on a
+    # coaster and a fat stripe on a sheet of plywood.
+    line = max(0.6, (px_width / dpi) * 0.22)
     deepest = max(placed.pocket_depths(), default=1.0)
+    # Matplotlib sizes text in points, but a label's height is in millimetres
+    # and has to scale with the drawing: a 16 mm label passed straight through
+    # as 16 points is invisible on a tray and enormous on a sheet of plywood.
+    view_width = (frame[2] - frame[0]) + 2 * margin
+    points_per_mm = (px_width / dpi * 72.0) / view_width
 
     for part in placed.placed_parts():
         ax.add_patch(
@@ -248,7 +256,7 @@ def render_preview(
                 va="center" if label.align == "center" else "baseline",
                 rotation=label.rotation,
                 rotation_mode="anchor",
-                fontsize=label.height * 0.8,
+                fontsize=max(label.height * points_per_mm * 0.8, 1.5),
                 color=PREVIEW_COLORS["info"],
                 zorder=7,
             )
@@ -261,7 +269,7 @@ def render_preview(
             f"{width:.0f} x {height:.0f} x {placed.thickness:g} mm   {placed.material}",
             ha="center",
             va="center",
-            fontsize=span * 0.028,
+            fontsize=min(max(caption_space * 0.45 * points_per_mm, 5.0), 16.0),
             color=PREVIEW_COLORS["caption"],
         )
 

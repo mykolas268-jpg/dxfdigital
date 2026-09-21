@@ -5,7 +5,9 @@ from __future__ import annotations
 from .ashtrays import AshtrayGenerator
 from .base import Generator, GeneratorParams, ParamDoc
 from .boards import BoardGenerator
+from .boxes import BoxGenerator
 from .coasters import CoasterGenerator
+from .furniture import FurnitureGenerator
 from .stands import StandGenerator
 from .trays import TrayGenerator
 
@@ -78,6 +80,8 @@ for _generator in (
     CoasterGenerator(),
     AshtrayGenerator(),
     StandGenerator(),
+    BoxGenerator(),
+    FurnitureGenerator(),
 ):
     register(_generator)
 del _generator

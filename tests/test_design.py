@@ -50,11 +50,30 @@ def test_machine_derives_radius_and_sheet() -> None:
     assert laser.default_sheet() == LASER_SHEET
 
 
-def test_machine_slot_width_differs_by_mode() -> None:
+def test_machine_slot_width_is_the_nominal_fit_on_both_modes() -> None:
     router = Machine(mode=Mode.ROUTER, clearance=0.2)
     laser = Machine(mode=Mode.LASER, clearance=0.2, kerf=0.15)
     assert router.slot_width(18.0) == pytest.approx(18.2)
-    assert laser.slot_width(3.0) == pytest.approx(3.05)
+    assert laser.slot_width(3.0) == pytest.approx(3.2)
+
+
+def test_kerf_compensation_grows_the_outline_and_shrinks_the_cutouts() -> None:
+    kerf = 0.15
+    part = Part("p", g.rect_ring(100, 60), holes=[g.rect_ring(20, 20, 40, 20)])
+    fixed = part.kerf_compensated(kerf)
+    assert g.size_of(fixed.outline)[0] == pytest.approx(100 + kerf)
+    assert g.size_of(fixed.holes[0])[0] == pytest.approx(20 - kerf)
+
+
+def test_kerf_compensation_is_a_no_op_at_zero() -> None:
+    part = Part("p", g.rect_ring(100, 60))
+    assert part.kerf_compensated(0.0) is part
+
+
+def test_kerf_compensation_refuses_a_cutout_narrower_than_the_beam() -> None:
+    part = Part("p", g.rect_ring(100, 60), holes=[g.rect_ring(0.1, 20, 40, 20)])
+    with pytest.raises(ValueError, match="narrower than the"):
+        part.kerf_compensated(0.5)
 
 
 @pytest.mark.parametrize(

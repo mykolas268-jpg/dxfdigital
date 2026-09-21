@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Iterable, Mapping, Sequence
 from annotated_types import Ge, Gt, Le, Lt, MaxLen, MinLen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..core.design import Design, Machine, Mode, Part
+from ..core.design import Design, Label, Machine, Mode, Part
 from ..core.layers import (
     CUT_INSIDE,
     CUT_OUTSIDE,
@@ -34,6 +34,7 @@ from ..core.layers import (
     is_pocket_layer,
     parse_pocket_depth,
 )
+from ..core import geometry as geo
 from ..core.limits import ValidationConfig
 from ..core.validate import Report, validate_design
 
@@ -45,8 +46,12 @@ __all__ = [
     "ParamDoc",
     "STOCK_SIZES",
     "smallest_stock",
+    "apply_kerf",
     "arrange_grid",
+    "nest_parts",
+    "label_parts",
     "cutting_order_for",
+    "material_phrase",
     "slugify",
     "GOLDEN",
 ]
@@ -88,6 +93,24 @@ def smallest_stock(
     return sizes[-1]
 
 
+def material_phrase(thickness: float, material: str) -> str:
+    """Describe stock without saying the thickness twice.
+
+    Materials are often written with the thickness already in them, as "3 mm
+    birch ply", and prefixing that again gives "3 mm 3 mm birch ply".
+
+    Args:
+        thickness: Material thickness in mm.
+        material: Free-text material description.
+
+    Returns:
+        A phrase such as ``"19 mm oak"`` or ``"3 mm birch ply"``.
+    """
+    if re.match(r"^\s*\d+(\.\d+)?\s*mm\b", material, flags=re.IGNORECASE):
+        return material.strip()
+    return f"{thickness:g} mm {material}"
+
+
 def slugify(*parts: object) -> str:
     """Build a filesystem-safe slug from arbitrary parts.
 
@@ -108,6 +131,26 @@ def slugify(*parts: object) -> str:
         if text:
             chunks.append(text)
     return "-".join(chunks)
+
+
+def apply_kerf(parts: Sequence["Part"], params: "GeneratorParams") -> list["Part"]:
+    """Compensate every part for the laser kerf; a no-op on a router.
+
+    Applied before parts are arranged, because compensation changes their
+    sizes.  See :meth:`dxfgen.core.design.Part.kerf_compensated` for why this
+    is done to the whole part rather than to individual slots.
+
+    Args:
+        parts: The parts to compensate.
+        params: The generator parameters, for the machine settings.
+
+    Returns:
+        The compensated parts, or the originals on a router.
+    """
+    machine = params.machine()
+    if not machine.is_laser or machine.kerf <= 0:
+        return list(parts)
+    return [part.kerf_compensated(machine.kerf) for part in parts]
 
 
 def arrange_grid(
@@ -141,6 +184,120 @@ def arrange_grid(
         row, column = divmod(index, columns)
         part.origin = (column * cell_w - x0, row * cell_h - y0)
         part.rotation = 0.0
+
+
+def nest_parts(
+    parts: Sequence["Part"],
+    sheet: tuple[float, float],
+    gap: float = 12.0,
+    margin: float = 10.0,
+    allow_rotation: bool = True,
+) -> list[list["Part"]]:
+    """Pack parts onto sheets and set their placement, in place.
+
+    A first-fit-decreasing shelf packer: parts are sorted tallest first and
+    laid in rows, each row as tall as its first part.  It is not optimal - no
+    practical packer is - but it is stable, quick, and leaves a layout an
+    operator can read, which matters more on a full sheet of plywood than the
+    last few percent of yield.
+
+    Parts taller than they are wide are turned on their side when that helps
+    them fit, and a part that fits neither way is reported rather than
+    silently dropped.
+
+    Args:
+        parts: The parts to place.  Their ``origin`` and ``rotation`` are
+            overwritten, and ``quantity`` is expanded into separate copies.
+        sheet: ``(width, height)`` of the stock in mm.
+        gap: Space between parts, in mm.
+        margin: Unused border around the sheet, in mm.
+        allow_rotation: Whether parts may be turned 90 degrees.
+
+    Returns:
+        One list of placed parts per sheet.
+
+    Raises:
+        ValueError: If a part does not fit on a sheet in either orientation.
+    """
+    sheet_w, sheet_h = sheet
+    usable_w = sheet_w - 2 * margin
+    usable_h = sheet_h - 2 * margin
+    if usable_w <= 0 or usable_h <= 0:
+        raise ValueError(f"a {margin} mm margin leaves no usable area on {sheet}")
+
+    expanded: list[Part] = []
+    for part in parts:
+        for index in range(part.quantity):
+            clone = part.copy(quantity=1)
+            if part.quantity > 1:
+                clone.name = f"{part.name}-{index + 1}"
+            expanded.append(clone)
+
+    def footprint(part: Part, turned: bool) -> tuple[float, float]:
+        width, height = part.size()
+        return (height, width) if turned else (width, height)
+
+    prepared: list[tuple[float, float, bool, Part]] = []
+    for part in expanded:
+        width, height = footprint(part, False)
+        turned = False
+        if width > usable_w or height > usable_h:
+            if allow_rotation and height <= usable_w and width <= usable_h:
+                turned = True
+                width, height = height, width
+            else:
+                raise ValueError(
+                    f"part {part.name!r} is {width:.0f} x {height:.0f} mm and "
+                    f"does not fit a {sheet_w:g} x {sheet_h:g} mm sheet with a "
+                    f"{margin:g} mm margin"
+                )
+        prepared.append((width, height, turned, part))
+
+    prepared.sort(key=lambda item: (-item[1], -item[0], item[3].name))
+
+    sheets: list[list[Part]] = []
+    cursor_x = margin
+    cursor_y = margin
+    row_height = 0.0
+    current: list[Part] = []
+    for width, height, turned, part in prepared:
+        if current and cursor_x + width > sheet_w - margin:
+            cursor_x = margin
+            cursor_y += row_height + gap
+            row_height = 0.0
+        if current and cursor_y + height > sheet_h - margin:
+            sheets.append(current)
+            current = []
+            cursor_x = margin
+            cursor_y = margin
+            row_height = 0.0
+        part.rotation = 90.0 if turned else 0.0
+        x0, y0, _, _ = geo.bbox(geo.rotate(part.outline, part.rotation))
+        part.origin = (cursor_x - x0, cursor_y - y0)
+        current.append(part)
+        cursor_x += width + gap
+        row_height = max(row_height, height)
+    if current:
+        sheets.append(current)
+    return sheets
+
+
+def label_parts(parts: Sequence["Part"], height: float = 6.0) -> None:
+    """Put each part's name on its INFO layer, in place.
+
+    A nested sheet of twenty similar panels is unusable without this.
+
+    Args:
+        parts: The parts to label.
+        height: Text height in mm.
+    """
+    for part in parts:
+        x0, y0, x1, y1 = part.bbox()
+        if min(x1 - x0, y1 - y0) < height * 3:
+            continue
+        part.labels.append(
+            Label(part.name, ((x0 + x1) / 2.0, (y0 + y1) / 2.0), height, align="center")
+        )
 
 
 def cutting_order_for(design: Design) -> list[str]:

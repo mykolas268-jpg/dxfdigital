@@ -1184,45 +1184,35 @@ def slot_ring(
 
 
 def joint_slot_width(
-    thickness: float,
-    mode: str,
-    clearance: float = 0.2,
-    kerf: float = 0.15,
+    thickness: float, mode: str, clearance: float = 0.2
 ) -> float:
-    """Return the width a slot must be *drawn* at for a slot-together joint.
+    """Return the nominal width of a slot-together joint.
 
-    Router mode cuts on the drawn line, so the drawn width carries the fit
-    clearance directly.  Laser mode burns ``kerf`` away, so the drawn width is
-    reduced by one kerf and the finished cut lands on ``thickness +
-    clearance``.
+    This is the *finished* width the joint needs, on either machine.  Kerf is
+    deliberately not handled here: a laser takes material off the tab as well
+    as out of the slot, so compensating only the slot leaves the joint loose by
+    a whole kerf.  The correction belongs to the part as a whole - every
+    outline grown by half a kerf, every cutout shrunk by the same - which is
+    what :meth:`dxfgen.core.design.Part.kerf_compensated` does, and it gets
+    tabs and slots right together.
 
     Args:
         thickness: Material thickness in mm.
-        mode: ``"router"`` or ``"laser"``.
-        clearance: Desired finished clearance in mm; 0 gives a press fit.
-        kerf: Laser kerf width in mm, ignored for router mode.
+        mode: ``"router"`` or ``"laser"``; validated, though the answer is
+            currently the same for both.
+        clearance: Finished clearance in mm; 0 gives a press fit.
 
     Returns:
-        The drawn slot width in mm.
+        The nominal slot width in mm.
 
     Raises:
-        ValueError: On unknown ``mode``, non-positive ``thickness``, or a
-            drawn width that would collapse to zero.
+        ValueError: On unknown ``mode`` or non-positive ``thickness``.
     """
     if thickness <= 0:
         raise ValueError(f"thickness must be > 0, got {thickness}")
-    mode = mode.lower()
-    if mode == "router":
-        width = thickness + clearance
-    elif mode == "laser":
-        width = thickness + clearance - kerf
-    else:
+    if mode.lower() not in ("router", "laser"):
         raise ValueError(f"mode must be 'router' or 'laser', got {mode!r}")
-    if width <= 0:
-        raise ValueError(
-            f"slot width collapsed to {width}; clearance/kerf exceed thickness"
-        )
-    return width
+    return thickness + clearance
 
 
 def suggest_finger_count(

@@ -98,9 +98,7 @@ class Machine:
 
         See :func:`dxfgen.core.geometry.joint_slot_width`.
         """
-        return geo.joint_slot_width(
-            thickness, self.mode.value, self.clearance, self.kerf
-        )
+        return geo.joint_slot_width(thickness, self.mode.value, self.clearance)
 
     def default_sheet(self) -> tuple[float, float]:
         """Default stock sheet size in mm for this mode."""
@@ -280,6 +278,80 @@ class Part:
             ],
             quantity=self.quantity,
         )
+
+    def kerf_compensated(self, kerf: float) -> "Part":
+        """Return a copy offset so a laser cut lands on the nominal geometry.
+
+        A laser removes ``kerf`` of material centred on the line it follows.
+        Growing every outer profile by half a kerf and shrinking every cutout
+        by the same amount makes each cut edge land where the design says,
+        which is the only way a tab and the slot it goes into both come out
+        right: correcting the slot alone leaves the joint a full kerf loose,
+        because the tab shrank too.
+
+        Pockets are left alone.  A pocket on a laser is raster engraving, and
+        a raster pass does not have an edge to compensate.
+
+        Args:
+            kerf: Kerf width in mm, must be >= 0.  Zero returns the part
+                unchanged.
+
+        Returns:
+            The compensated part.
+
+        Raises:
+            ValueError: If compensation erases or splits a contour, which
+                means a feature is smaller than the beam.
+        """
+        if kerf <= 0:
+            return self
+        outer = geo.kerf_compensate_ring(self.outline, kerf, outward=True)
+        if len(outer) != 1:
+            raise ValueError(
+                f"kerf compensation split the outline of {self.name!r}"
+            )
+        holes: list[Ring] = []
+        for hole in self.holes:
+            shrunk = geo.kerf_compensate_ring(hole, kerf, outward=False)
+            if not shrunk:
+                raise ValueError(
+                    f"a cutout in {self.name!r} is narrower than the "
+                    f"{kerf:g} mm kerf and would burn away"
+                )
+            holes.extend(shrunk)
+        return replace(self, outline=outer[0], holes=holes)
+
+    def copy(self, **changes: object) -> "Part":
+        """Return an independent copy, optionally with fields changed.
+
+        :func:`dataclasses.replace` copies the dataclass but not the lists
+        inside it, so two "copies" of a part share one ``labels`` list and
+        appending to either appends to both.  Anything that clones a part for
+        nesting has to use this instead.
+
+        Args:
+            **changes: Fields to override on the copy.
+
+        Returns:
+            A part sharing no mutable state with this one.
+        """
+        clone = replace(
+            self,
+            holes=[list(ring) for ring in self.holes],
+            pockets=[
+                Pocket(list(p.ring), p.depth, [list(i) for i in p.islands])
+                for p in self.pockets
+            ],
+            drills=[Drill(d.center, d.diameter) for d in self.drills],
+            engrave=[Contour(list(c.points), c.layer, c.closed) for c in self.engrave],
+            labels=[
+                Label(l.text, l.position, l.height, l.layer, l.rotation, l.align)
+                for l in self.labels
+            ],
+            **changes,
+        )
+        clone.outline = list(self.outline)
+        return clone
 
     def translated(self, dx: float, dy: float) -> "Part":
         """Return a copy shifted by ``(dx, dy)`` on top of its current origin."""
