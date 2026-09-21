@@ -17,6 +17,7 @@ from shapely.ops import unary_union
 
 from . import geometry as geo
 from .geometry import Point, Ring
+from .limits import ValidationConfig
 from .layers import (
     CUT_INSIDE,
     CUT_OUTSIDE,
@@ -37,6 +38,7 @@ __all__ = [
     "Label",
     "Part",
     "Design",
+    "ValidationConfig",
     "ROUTER_SHEET",
     "LASER_SHEET",
 ]
@@ -334,6 +336,8 @@ class Design:
             verbatim so any file can be regenerated.
         notes: Extra README lines.
         cutting_order: Ordered operation names for the README.
+        limits: The manufacturing limits this design was built to, used by
+            the validator unless it is given others.
         seed: Seed used by the variant generator, when applicable.
     """
 
@@ -349,6 +353,7 @@ class Design:
     params: dict[str, object] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     cutting_order: list[str] = field(default_factory=list)
+    limits: ValidationConfig = field(default_factory=ValidationConfig)
     seed: int | None = None
 
     def __post_init__(self) -> None:

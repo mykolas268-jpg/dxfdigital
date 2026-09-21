@@ -343,3 +343,42 @@ def test_issue_str_includes_part_and_location() -> None:
     report = Report()
     report.add("E_X", Severity.ERROR, "bad", part="lid", location=(12.345, 6.0))
     assert str(report.issues[0]) == "ERROR E_X [lid]: bad at (12.3, 6.0)"
+
+
+def test_a_notch_the_cutter_cannot_enter_is_rejected() -> None:
+    outline = [
+        (0, 0), (200, 0), (200, 120), (102, 120),
+        (102, 60), (98, 60), (98, 120), (0, 120),
+    ]
+    report = validate_design(design_of(Part("p", outline)))
+    assert "E_PROFILE_TOO_TIGHT" in codes(report)
+    assert "cannot enter" in report.errors[0].message
+
+
+def test_square_inside_corners_on_the_outer_profile_are_rejected() -> None:
+    outline = [
+        (0, 0), (200, 0), (200, 120), (130, 120),
+        (130, 60), (70, 60), (70, 120), (0, 120),
+    ]
+    assert "E_PROFILE_TOO_TIGHT" in codes(validate_design(design_of(Part("p", outline))))
+
+
+def test_filleted_inside_corners_on_the_outer_profile_pass() -> None:
+    outline = g.fillet_ring(
+        [
+            (0, 0), (200, 0), (200, 120), (130, 120),
+            (130, 60), (70, 60), (70, 120), (0, 120),
+        ],
+        5.0,
+        corners="concave",
+    )
+    assert "E_PROFILE_TOO_TIGHT" not in codes(validate_design(design_of(Part("p", outline))))
+
+
+def test_laser_mode_does_not_apply_the_profile_check() -> None:
+    outline = [
+        (0, 0), (200, 0), (200, 120), (102, 120),
+        (102, 60), (98, 60), (98, 120), (0, 120),
+    ]
+    laser = design_of(Part("p", outline), machine=Machine(mode=Mode.LASER), thickness=6.0)
+    assert "E_PROFILE_TOO_TIGHT" not in codes(validate_design(laser))

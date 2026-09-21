@@ -681,3 +681,56 @@ def test_text_rejects_blank_and_bad_height() -> None:
         g.text_contours("   ", 10.0)
     with pytest.raises(ValueError):
         g.text_contours("A", 0.0)
+
+
+def test_closing_leaves_a_cutter_friendly_shape_alone() -> None:
+    # Exact closing is a superset of the input; on tessellated geometry the two
+    # may differ either way, but only far below the arc tolerance.
+    poly = Polygon(g.rounded_rect_ring(200, 120, 15))
+    closed = g.closing(poly, 3.175)
+    difference = closed.symmetric_difference(poly)
+    assert g.residual_thickness(difference) < g.ARC_TOLERANCE
+
+
+def test_closing_rejects_bad_radius() -> None:
+    with pytest.raises(ValueError):
+        g.closing(Polygon(g.rect_ring(10, 10)), 0)
+
+
+def notched_profile(gap: float) -> list[tuple[float, float]]:
+    """A 100x60 plate with a ``gap`` wide, 30 mm deep notch in the top edge."""
+    half = gap / 2.0
+    return [
+        (0, 0), (100, 0), (100, 60), (50 + half, 60),
+        (50 + half, 30), (50 - half, 30), (50 - half, 60), (0, 60),
+    ]
+
+
+def test_excess_zones_flags_a_notch_narrower_than_the_cutter() -> None:
+    tool_r = 3.175
+    zones = g.excess_zones(Polygon(notched_profile(4.0)), tool_r)
+    # The cutter cannot enter at all, so the whole notch is unmachinable.
+    assert sum(area for _, area, _ in zones) > 100.0
+    assert zones[0][2] > 2 * tool_r * 0.5
+
+
+def test_excess_zones_flags_only_the_corners_of_a_wide_notch() -> None:
+    tool_r = 3.175
+    zones = g.excess_zones(Polygon(notched_profile(14.0)), tool_r)
+    assert len(zones) == 2  # the two square inside corners at the notch mouth
+    assert sum(area for _, area, _ in zones) < 10.0
+
+
+def test_filleting_the_inside_corners_makes_a_notch_machinable() -> None:
+    tool_r = 3.175
+    filleted = g.fillet_ring(notched_profile(40.0), 4.0, corners="concave")
+    assert g.excess_zones(Polygon(filleted), tool_r, min_thickness=0.35) == []
+
+
+def test_a_convex_profile_has_no_excess() -> None:
+    for ring in (
+        g.rounded_rect_ring(200, 120, 15),
+        g.circle_ring(0, 0, 60),
+        g.superellipse_ring(200, 120, 3.0),
+    ):
+        assert g.excess_zones(Polygon(ring), 3.175, min_thickness=0.35) == []

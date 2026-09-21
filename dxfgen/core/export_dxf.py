@@ -107,7 +107,11 @@ def build_document(design: Design) -> Drawing:
     Returns:
         An ezdxf :class:`~ezdxf.document.Drawing`.
     """
-    doc = ezdxf.new(DXF_VERSION, setup=True)
+    # setup=False keeps the tables to what this project actually writes: the
+    # "Standard" text style and three linetypes.  The full setup adds 20 KB of
+    # unused text and dimension styles to every file and gives a CAM importer
+    # more table entries to choke on.
+    doc = ezdxf.new(DXF_VERSION, setup=False)
     _prepare_header(doc)
     _prepare_layers(doc, design)
     msp = doc.modelspace()

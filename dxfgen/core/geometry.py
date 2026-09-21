@@ -81,6 +81,10 @@ __all__ = [
     "offset_ring",
     "classify_convex",
     "fillet_ring",
+    "round_convex",
+    "round_concave",
+    "offset_centreline",
+    "curved_slot",
     "relief_positions",
     "apply_relief",
     "slot_ring",
@@ -89,6 +93,8 @@ __all__ = [
     "finger_joint_edge",
     "kerf_compensate_ring",
     "opening",
+    "closing",
+    "excess_zones",
     "residual_region",
     "residual_thickness",
     "unreachable_zones",
@@ -954,6 +960,192 @@ def apply_relief(
 # --------------------------------------------------------------------------- #
 # joints
 # --------------------------------------------------------------------------- #
+def round_convex(
+    ring: Sequence[Point], radius: float, tolerance: float = ARC_TOLERANCE
+) -> Ring:
+    """Round every convex corner of a cut region so a round tool can clear it.
+
+    This is a morphological opening, not a vertex-by-vertex fillet, and that
+    difference matters.  Filleting clamps each corner's radius to the length of
+    the edges meeting there, so a corner where a long straight edge meets a
+    *tessellated curve* gets clamped to half a chord - a millimetre or two -
+    and silently fails to do its job.  An opening has no such failure mode: the
+    result is by definition the area a disc of ``radius`` can sweep, so
+    :func:`unreachable_zones` on it is empty for any tool radius at or below
+    ``radius``.
+
+    Args:
+        ring: Boundary of the region to be removed.
+        radius: Corner radius in mm, must be > 0 and should be at least the
+            tool radius.
+        tolerance: Arc chord tolerance used to thin the result, in mm.
+
+    Returns:
+        One closed ring, counter-clockwise.
+
+    Raises:
+        ValueError: If ``radius`` is not positive, or the region is too small
+            to survive the operation.
+    """
+    if radius <= 0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    poly = polygon_from_ring(ring)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    opened = opening(poly, radius, slack=0.0)
+    if opened.is_empty:
+        raise ValueError(
+            f"rounding to r={radius} erased the region; it is smaller than the "
+            f"corner radius"
+        )
+    if isinstance(opened, MultiPolygon):
+        raise ValueError(f"rounding to r={radius} split the region in two")
+    thinned = opened.simplify(tolerance * 0.4, preserve_topology=True)
+    if thinned.is_empty or not isinstance(thinned, Polygon):
+        thinned = opened
+    return ensure_ccw(dedupe(list(thinned.exterior.coords)))
+
+
+def round_concave(
+    ring: Sequence[Point],
+    radius: float,
+    tolerance: float = ARC_TOLERANCE,
+    max_area_gain: float = 0.05,
+) -> Ring:
+    """Round every concave corner of a part profile so a round tool can cut it.
+
+    The dual of :func:`round_convex`: a morphological closing, which leaves the
+    profile with no inside corner tighter than ``radius``, so
+    :func:`excess_zones` on it is empty for any tool radius at or below
+    ``radius``.
+
+    Args:
+        ring: Boundary of the material being kept.
+        radius: Inside corner radius in mm, must be > 0.
+        tolerance: Arc chord tolerance used to thin the result, in mm.
+        max_area_gain: Guard against a radius large enough to swallow a whole
+            concave feature, as a fraction of the original area.  A closing
+            fills any notch narrower than twice the radius, and silently
+            deleting a design feature is worse than refusing.
+
+    Returns:
+        One closed ring, counter-clockwise.
+
+    Raises:
+        ValueError: If ``radius`` is not positive, or the closing filled more
+            than ``max_area_gain`` of the profile.
+    """
+    if radius <= 0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    poly = polygon_from_ring(ring)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    closed = closing(poly, radius)
+    if isinstance(closed, MultiPolygon) or closed.is_empty:
+        raise ValueError(f"rounding inside corners to r={radius} failed")
+    gain = (closed.area - poly.area) / poly.area if poly.area > 0 else 0.0
+    if gain > max_area_gain:
+        raise ValueError(
+            f"rounding inside corners to r={radius} filled "
+            f"{gain * 100:.1f}% of the profile, which means it swallowed a "
+            f"feature; use a smaller radius"
+        )
+    thinned = closed.simplify(tolerance * 0.4, preserve_topology=True)
+    if thinned.is_empty or not isinstance(thinned, Polygon):
+        thinned = closed
+    return ensure_ccw(dedupe(list(thinned.exterior.coords)))
+
+
+def offset_centreline(
+    ring: Sequence[Point], distance: float
+) -> list[Point]:
+    """Return the curve running ``distance`` inside a profile.
+
+    Used to lay a feature out along a rim: because every point of this curve is
+    ``distance`` from the profile, a slot of width ``w`` centred on it keeps a
+    uniform ``distance - w/2`` of wall all the way along, whatever shape the
+    profile is.
+
+    Args:
+        ring: The outer profile.
+        distance: Inward distance in mm, must be > 0.
+
+    Returns:
+        The offset ring's vertices.
+
+    Raises:
+        ValueError: If ``distance`` is not positive or the offset collapses.
+    """
+    if distance <= 0:
+        raise ValueError(f"distance must be > 0, got {distance}")
+    rings = offset_ring(ring, -distance, join="round")
+    if len(rings) != 1:
+        raise ValueError(
+            f"offsetting {distance} mm inward does not leave a single curve"
+        )
+    return rings[0]
+
+
+def curved_slot(
+    centreline: Sequence[Point],
+    at: Point,
+    length: float,
+    width: float,
+    tolerance: float = ARC_TOLERANCE,
+) -> Ring:
+    """Build a slot of ``length`` along a centreline, centred nearest ``at``.
+
+    The slot follows the centreline, so on a curved rim it comes out as a
+    curved hand slot rather than a straight one that crowds the edge at its
+    ends.  Because it is a constant-width sweep of a disc, every corner is a
+    rounded cap and the wall thickness is uniform.
+
+    Args:
+        centreline: The curve to follow, from :func:`offset_centreline`.
+        at: The slot is centred at the point of the curve closest to this.
+        length: Slot length measured along the curve, in mm.
+        width: Slot width in mm.
+        tolerance: Arc chord tolerance used to thin the result, in mm.
+
+    Returns:
+        One closed ring.
+
+    Raises:
+        ValueError: On non-positive dimensions, or a curve too short to hold
+            the slot.
+    """
+    from shapely.geometry import LineString, Point as _ShapelyPoint
+    from shapely.ops import substring
+
+    if length <= 0 or width <= 0:
+        raise ValueError(f"slot needs positive size, got {length}x{width}")
+    pts = dedupe(centreline)
+    if len(pts) < 3:
+        raise ValueError("centreline is degenerate")
+    # Rotate the closed curve so the slot's midpoint sits far from the seam,
+    # which lets a plain substring do the work without wrap-around logic.
+    target = _ShapelyPoint(*at)
+    nearest = min(range(len(pts)), key=lambda i: target.distance(_ShapelyPoint(*pts[i])))
+    shift = (nearest - len(pts) // 2) % len(pts)
+    rotated = pts[shift:] + pts[:shift]
+    line = LineString(rotated + [rotated[0]])
+    if line.length < length + 2.0:
+        raise ValueError(
+            f"centreline is {line.length:.0f} mm long, too short for a "
+            f"{length:g} mm slot"
+        )
+    middle = line.project(target)
+    start = max(0.0, min(middle - length / 2.0, line.length - length))
+    piece = substring(line, start, start + length)
+    slot = piece.buffer(width / 2.0, quad_segs=BUFFER_QUAD_SEGS, cap_style="round")
+    if isinstance(slot, MultiPolygon) or slot.is_empty:
+        raise ValueError("slot sweep produced unusable geometry")
+    thinned = slot.simplify(tolerance * 0.4, preserve_topology=True)
+    if thinned.is_empty or not isinstance(thinned, Polygon):
+        thinned = slot
+    return ensure_ccw(dedupe(list(thinned.exterior.coords)))
+
+
 def slot_ring(
     length: float,
     width: float,
@@ -1224,6 +1416,81 @@ def residual_thickness(
     return lo
 
 
+def _zone_list(
+    region: BaseGeometry, min_thickness: float
+) -> list[tuple[Point, float, float]]:
+    """Describe each piece of a residual region, thickest first."""
+    if region.is_empty:
+        return []
+    if min_thickness > 0 and region.buffer(-min_thickness / 2.0).is_empty:
+        return []
+    zones: list[tuple[Point, float, float]] = []
+    for piece in getattr(region, "geoms", [region]):
+        if piece.is_empty:
+            continue
+        thickness = residual_thickness(piece)
+        if thickness <= min_thickness:
+            continue
+        c = piece.centroid
+        zones.append(((c.x, c.y), piece.area, thickness))
+    zones.sort(key=lambda z: -z[2])
+    return zones
+
+
+def closing(
+    geom: BaseGeometry, radius: float, slack: float = EROSION_SLACK
+) -> BaseGeometry:
+    """Morphological closing: the shape a round tool can actually leave behind.
+
+    Dilating then eroding by the tool radius fills in every concave feature
+    the cutter is too fat to enter.  Where the result differs from the input,
+    the profile asks for an inside corner the tool cannot cut.
+
+    Args:
+        geom: The part profile, i.e. the material being kept.
+        radius: Tool radius in mm, must be > 0.
+        slack: Unused here, accepted for symmetry with :func:`opening`.
+
+    Returns:
+        The closed region, always a superset of ``geom``.
+
+    Raises:
+        ValueError: If ``radius`` is not positive.
+    """
+    if radius <= 0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    dilated = geom.buffer(radius, quad_segs=BUFFER_QUAD_SEGS)
+    return dilated.buffer(-radius, quad_segs=BUFFER_QUAD_SEGS)
+
+
+def excess_zones(
+    geom: BaseGeometry,
+    radius: float,
+    min_thickness: float = 0.0,
+    slack: float = EROSION_SLACK,
+) -> list[tuple[Point, float, float]]:
+    """Find concave profile features a round tool is too fat to cut.
+
+    This is the dual of :func:`unreachable_zones`: that one asks what the tool
+    cannot remove from *inside* a pocket, this one asks what it cannot remove
+    from *outside* a part, which is what a notch narrower than the cutter or a
+    square inside corner on an outer profile amounts to.
+
+    Args:
+        geom: The part profile, i.e. the material being kept.
+        radius: Tool radius in mm.
+        min_thickness: Ignore slivers thinner than this, in mm.
+        slack: Tolerance absorbed before comparing, in mm.  Tessellation makes
+            an exact set comparison meaningless below this scale.
+
+    Returns:
+        ``[(centroid, area, thickness), ...]`` sorted by descending thickness.
+    """
+    filled = closing(geom, radius)
+    excess = filled.difference(geom.buffer(slack, quad_segs=BUFFER_QUAD_SEGS))
+    return _zone_list(excess, min_thickness)
+
+
 def unreachable_zones(
     geom: BaseGeometry,
     radius: float,
@@ -1248,22 +1515,7 @@ def unreachable_zones(
         ``[(centroid, area, thickness), ...]`` sorted by descending
         thickness.
     """
-    residual = residual_region(geom, radius, slack)
-    if residual.is_empty:
-        return []
-    if min_thickness > 0 and residual.buffer(-min_thickness / 2.0).is_empty:
-        return []
-    zones: list[tuple[Point, float, float]] = []
-    for piece in getattr(residual, "geoms", [residual]):
-        if piece.is_empty:
-            continue
-        thickness = residual_thickness(piece)
-        if thickness <= min_thickness:
-            continue
-        c = piece.centroid
-        zones.append(((c.x, c.y), piece.area, thickness))
-    zones.sort(key=lambda z: -z[2])
-    return zones
+    return _zone_list(residual_region(geom, radius, slack), min_thickness)
 
 
 # --------------------------------------------------------------------------- #

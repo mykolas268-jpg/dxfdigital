@@ -19,8 +19,9 @@ The checks fall into three groups:
 
 **Tool reality**
     Pocket depth against material thickness, minimum feature width against
-    the cutter, and whether a round cutter can actually reach every corner of
-    every cut region.
+    the cutter, whether a round cutter can reach every corner of every cut
+    region, and whether it can follow every concave feature of the outer
+    profile.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from shapely.ops import unary_union
 
 from . import geometry as geo
 from .design import Design, Machine, Mode, Part
+from .limits import ValidationConfig
 from .geometry import Point, Ring
 from .layers import (
     CUT_INSIDE,
@@ -164,52 +166,6 @@ class Report:
         """Raise :class:`ValidationError` if any error was recorded."""
         if not self.ok:
             raise ValidationError(self)
-
-
-@dataclass(frozen=True)
-class ValidationConfig:
-    """Tunable limits for the checks.
-
-    Attributes:
-        min_wall: Minimum material left between a cut feature and the part
-            edge, and between two features, in mm.
-        pocket_floor: Material that must remain under the deepest pocket, mm.
-        feature_factor: A cut region must be at least this multiple of the
-            cutter diameter wide; below it there is no chip clearance.
-        tight_factor: A cut region narrower than this multiple of the cutter
-            diameter forces the cutter to run at full engagement with no room
-            for a separate finishing pass.  Cuttable, but it earns a warning.
-        max_corner_residual: How much material a round cutter may leave in a
-            corner, measured as the thickness of the leftover sliver in mm.
-            A relieved corner leaves only tessellation-scale slivers of
-            about 0.05 mm, while an un-relieved square corner leaves
-            ``0.34 x`` the cutter radius - 1.07 mm for a 6.35 mm cutter - so
-            this threshold separates the two by a wide margin.
-        origin_tolerance: How far the bounding box corner may sit from the
-            origin, mm.
-        duplicate_tolerance: Coordinate rounding used to detect duplicate
-            contours, mm.
-        min_segment: Segments shorter than this count as zero-length, mm.
-        min_drill_diameter: Smallest sensible drill, mm.
-        min_feature_area: Cut regions smaller than this are reported as
-            probable mistakes, mm^2.
-        max_points_per_contour: Above this a contour is flagged as bloated.
-        check_reachability: Whether to run the (relatively slow) cutter
-            reachability test.
-    """
-
-    min_wall: float = 8.0
-    pocket_floor: float = 5.0
-    feature_factor: float = 1.1
-    tight_factor: float = 2.0
-    max_corner_residual: float = 0.35
-    origin_tolerance: float = 0.01
-    duplicate_tolerance: float = 0.05
-    min_segment: float = geo.MIN_SEGMENT
-    min_drill_diameter: float = 2.0
-    min_feature_area: float = 4.0
-    max_points_per_contour: int = 20000
-    check_reachability: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -516,6 +472,30 @@ def _check_tooling(
             )
 
 
+def _check_profile(
+    report: Report, part: Part, machine: Machine, cfg: ValidationConfig
+) -> None:
+    """Can the cutter follow the outer profile's concave features?"""
+    if machine.is_laser or not cfg.check_reachability:
+        return
+    outline = _safe_polygon(part.outline)
+    if outline.is_empty:
+        return
+    zones = geo.excess_zones(outline, machine.tool_radius, cfg.max_corner_residual)
+    if zones:
+        where, _area, thickness = zones[0]
+        report.add(
+            "E_PROFILE_TOO_TIGHT",
+            Severity.ERROR,
+            f"the outer profile has {len(zones)} concave feature(s) a "
+            f"{machine.tool_diameter:g} mm cutter cannot enter, leaving "
+            f"{thickness:.2f} mm of material; widen the notch or fillet the "
+            f"inside corner to r >= {machine.tool_radius:.2f} mm",
+            part.name,
+            where,
+        )
+
+
 def _check_depths(report: Report, design: Design, cfg: ValidationConfig) -> None:
     """Pockets must leave a floor under them."""
     limit = design.thickness - cfg.pocket_floor
@@ -583,13 +563,15 @@ def validate_design(
 
     Args:
         design: The design to judge.
-        config: Limits to apply; the defaults match the project standard.
+        config: Limits to apply.  Defaults to the limits the design itself
+            carries, so a design is held to the standard it was built to
+            rather than to a global default.
 
     Returns:
         A :class:`Report`.  Call :meth:`Report.raise_for_status` to turn
         errors into an exception, which is what the exporters do.
     """
-    cfg = config or ValidationConfig()
+    cfg = config or design.limits
     report = Report()
     _check_design_layout(report, design, cfg)
     _check_depths(report, design, cfg)
@@ -597,6 +579,7 @@ def validate_design(
         _check_part_contours(report, part, cfg)
         _check_part_layout(report, part, cfg)
         _check_tooling(report, part, design.machine, cfg)
+        _check_profile(report, part, design.machine, cfg)
     return report
 
 
