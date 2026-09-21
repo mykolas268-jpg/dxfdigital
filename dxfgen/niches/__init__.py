@@ -1,0 +1,1 @@
+"""Per-niche design generators."""
