@@ -34,7 +34,6 @@ from matplotlib.path import Path as MplPath  # noqa: E402
 
 from .design import Design, Part  # noqa: E402
 from .geometry import Point, Ring, ensure_ccw, ensure_cw  # noqa: E402
-from .layers import layer_def  # noqa: E402
 
 __all__ = [
     "WOOD_PALETTES",
@@ -71,6 +70,7 @@ PREVIEW_COLORS = {
     "pocket_edge": "#96794a",
     "engrave": "#7d57a4",
     "drill": "#c87a2c",
+    "info": "#8a8a8a",
     "caption": "#4a4a4a",
 }
 _PREVIEW_BACKGROUND = PREVIEW_COLORS["background"]
@@ -231,11 +231,27 @@ def render_preview(
             PathPatch(
                 compound_path(part.outline),
                 facecolor="none",
-                edgecolor=_aci_rgb(layer_def("CUT_OUTSIDE").color),
-                linewidth=line * 1.4,
+                edgecolor=PREVIEW_COLORS["outline"],
+                linewidth=line * 1.5,
                 zorder=6,
             )
         )
+        # Annotation is part of what the file contains, so the preview shows
+        # it.  The mockup does not: that is the finished object, which has no
+        # INFO layer on it.
+        for label in part.labels:
+            ax.text(
+                label.position[0],
+                label.position[1],
+                label.text,
+                ha={"left": "left", "center": "center", "right": "right"}[label.align],
+                va="center" if label.align == "center" else "baseline",
+                rotation=label.rotation,
+                rotation_mode="anchor",
+                fontsize=label.height * 0.8,
+                color=PREVIEW_COLORS["info"],
+                zorder=7,
+            )
 
     if caption:
         width, height = placed.size()
@@ -271,14 +287,6 @@ def _depth_colour(depth: float, deepest: float) -> tuple[float, float, float]:
     deep = np.asarray(to_rgb(PREVIEW_COLORS["pocket_deep"]))
     ratio = min(1.0, depth / deepest) if deepest > 0 else 1.0
     return tuple(shallow + (deep - shallow) * ratio)
-
-
-def _aci_rgb(aci: int) -> tuple[float, float, float]:
-    """Convert an AutoCAD Color Index to a matplotlib RGB triple."""
-    from ezdxf import colors as ezcolors
-
-    r, g, b = ezcolors.aci2rgb(aci)
-    return (r / 255.0, g / 255.0, b / 255.0)
 
 
 def _circle_ring(centre: Point, radius: float, segments: int = 48) -> Ring:

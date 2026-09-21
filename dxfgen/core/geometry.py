@@ -36,6 +36,14 @@ MIN_SEGMENT: float = 0.01
 EPS: float = 1e-9
 #: Quadrant segment count used for shapely buffer operations.
 BUFFER_QUAD_SEGS: int = 32
+#: How much larger than the cutter a *part-side* relief disc must be.
+#: Relieving a cut region works with a disc the size of the cutter, because the
+#: cutter then sweeps the disc itself.  Relieving an inside corner on a part
+#: does not: at exactly tool size the arc meets the walls at junctions the
+#: cutter still cannot reach, leaving about a tenth of the cutter diameter
+#: behind.  A few percent oversize removes it completely - measured, the
+#: residual goes from 0.385 mm to nothing between 1.00x and 1.05x.
+RELIEF_OVERSIZE: float = 1.1
 #: Erosion relief used by :func:`opening`, in mm.  Tessellated arcs sit up to
 #: :data:`ARC_TOLERANCE` inside the true curve, so a tighter slack than that
 #: would measure the tessellation rather than the tool.
@@ -51,6 +59,7 @@ __all__ = [
     "MIN_SEGMENT",
     "EPS",
     "EROSION_SLACK",
+    "RELIEF_OVERSIZE",
     "Point",
     "Ring",
     "signed_area",
@@ -916,7 +925,8 @@ def apply_relief(
         style: ``"dogbone"`` or ``"tbone"``.
         region: ``"cutout"`` when ``ring`` bounds removed material (relief is
             added to it); ``"part"`` when ``ring`` bounds kept material
-            (relief is subtracted from it).
+            (relief is subtracted from it).  Part-side relief wants a disc
+            :data:`RELIEF_OVERSIZE` times the tool radius; see that constant.
         factor: Relief distance scale, see :func:`relief_positions`.
         tolerance: Arc chord tolerance in mm.
         min_turn_deg: Corner detection threshold, see

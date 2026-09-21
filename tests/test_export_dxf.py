@@ -227,3 +227,32 @@ def test_file_validation_notices_a_file_with_no_closed_contours(tmp_path: Path) 
     path = tmp_path / "lines.dxf"
     doc.saveas(path)
     assert "W_NO_CLOSED_CONTOURS" in {i.code for i in validate_dxf_file(path).issues}
+
+
+def test_open_engrave_polylines_are_not_flagged(tmp_path: Path) -> None:
+    """Single-line engraving is a stroke, not a boundary."""
+    from dxfgen.core.design import Contour
+    from dxfgen.core.layers import ENGRAVE
+
+    part = Part(
+        "p",
+        g.rounded_rect_ring(200, 120, 15),
+        engrave=[Contour([(40.0, 60.0), (160.0, 60.0)], ENGRAVE, closed=False)],
+    )
+    path, _ = write_dxf(sample_design(parts=[part]), tmp_path / "engraved.dxf")
+    report = validate_dxf_file(path)
+    assert report.ok
+    assert "E_OPEN_CONTOUR" not in {i.code for i in report.issues}
+
+
+def test_an_open_contour_on_a_cut_layer_is_still_an_error(tmp_path: Path) -> None:
+    doc = ezdxf.new("R2010", setup=False)
+    doc.header["$INSUNITS"] = 4
+    doc.layers.add(CUT_OUTSIDE)
+    doc.modelspace().add_lwpolyline(
+        [(0, 0), (50, 0), (50, 50)], close=False, dxfattribs={"layer": CUT_OUTSIDE}
+    )
+    path = tmp_path / "open.dxf"
+    doc.saveas(path)
+    report = validate_dxf_file(path)
+    assert "E_OPEN_CONTOUR" in {i.code for i in report.errors}

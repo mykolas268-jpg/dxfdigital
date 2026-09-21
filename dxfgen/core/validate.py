@@ -26,6 +26,7 @@ The checks fall into three groups:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import combinations
@@ -42,6 +43,7 @@ from .geometry import Point, Ring
 from .layers import (
     CUT_INSIDE,
     CUT_OUTSIDE,
+    ENGRAVE,
     INFO,
     is_cut_layer,
     parse_pocket_depth,
@@ -189,6 +191,24 @@ def _safe_polygon(ring: Sequence[Point]) -> Polygon:
     return poly
 
 
+def _safe_region(pocket) -> Polygon:
+    """The material a pocket actually removes, islands excluded.
+
+    Layout checks have to use this rather than the pocket's outer ring: a
+    juice groove is a ring with the working surface standing inside it, and a
+    hanging hole through that island removes nothing the groove also removes.
+    """
+    try:
+        region = pocket.region()
+    except ValueError:
+        return _safe_polygon(pocket.ring)
+    if not region.is_valid:
+        repaired = region.buffer(0)
+        if isinstance(repaired, Polygon) and not repaired.is_empty:
+            return repaired
+    return region
+
+
 # --------------------------------------------------------------------------- #
 # contour hygiene
 # --------------------------------------------------------------------------- #
@@ -324,13 +344,18 @@ def _check_part_layout(report: Report, part: Part, cfg: ValidationConfig) -> Non
     """Features must sit inside the part with enough wall left around them."""
     outline = _safe_polygon(part.outline)
     boundary = outline.exterior
-    features: list[tuple[str, Polygon, str]] = []
+    # Depth is carried alongside each feature so nesting can be judged: a
+    # through hole counts as infinitely deep.
+    features: list[tuple[str, Polygon, str, float]] = []
     for hole in part.holes:
-        features.append(("hole", _safe_polygon(hole), CUT_INSIDE))
+        features.append(("hole", _safe_polygon(hole), CUT_INSIDE, math.inf))
     for pocket in part.pockets:
-        features.append((f"pocket {pocket.depth:g} mm", _safe_polygon(pocket.ring), pocket.layer))
+        features.append(
+            (f"pocket {pocket.depth:g} mm", _safe_region(pocket), pocket.layer,
+             pocket.depth)
+        )
 
-    for label, poly, layer in features:
+    for label, poly, layer, _depth in features:
         if poly.is_empty:
             continue
         if not outline.contains(poly):
@@ -353,29 +378,47 @@ def _check_part_layout(report: Report, part: Part, cfg: ValidationConfig) -> Non
                 (poly.centroid.x, poly.centroid.y),
             )
 
-    for (la, pa, _), (lb, pb, _) in combinations(features, 2):
+    for (la, pa, _, da), (lb, pb, _, db) in combinations(features, 2):
         if pa.is_empty or pb.is_empty:
             continue
         inter = pa.intersection(pb)
-        if inter.area > cfg.min_feature_area / 100.0:
-            report.add(
-                "E_FEATURE_OVERLAP",
-                Severity.ERROR,
-                f"{la} and {lb} overlap by {inter.area:.2f} mm^2",
-                part.name,
-                (inter.centroid.x, inter.centroid.y),
-            )
+        if inter.area <= cfg.min_feature_area / 100.0:
+            gap = pa.distance(pb)
+            if gap < cfg.min_wall - 1e-6:
+                report.add(
+                    "E_WALL_THIN",
+                    Severity.ERROR,
+                    f"{la} and {lb} are only {gap:.2f} mm apart, minimum wall "
+                    f"is {cfg.min_wall:g} mm",
+                    part.name,
+                    (pa.centroid.x, pa.centroid.y),
+                )
             continue
-        gap = pa.distance(pb)
-        if gap < cfg.min_wall - 1e-6:
-            report.add(
-                "E_WALL_THIN",
-                Severity.ERROR,
-                f"{la} and {lb} are only {gap:.2f} mm apart, minimum wall is "
-                f"{cfg.min_wall:g} mm",
-                part.name,
-                (pa.centroid.x, pa.centroid.y),
-            )
+        # One feature wholly inside another is a step, not a collision: a
+        # through hole in a pocket floor is a counterbore, and a deeper pocket
+        # inside a shallower one is a stepped recess.  Only the inner feature
+        # being the shallower of the two makes no physical sense, because the
+        # outer operation would already have removed it.
+        if pa.contains(pb) or pb.contains(pa):
+            outer, inner = ((la, da), (lb, db)) if pa.contains(pb) else ((lb, db), (la, da))
+            if inner[1] < outer[1] - 1e-9:
+                report.add(
+                    "E_STEP_INVERTED",
+                    Severity.ERROR,
+                    f"{inner[0]} sits inside {outer[0]} but is shallower, so "
+                    f"the outer operation removes it first",
+                    part.name,
+                    (inter.centroid.x, inter.centroid.y),
+                )
+            continue
+        report.add(
+            "E_FEATURE_OVERLAP",
+            Severity.ERROR,
+            f"{la} and {lb} overlap by {inter.area:.2f} mm^2 without one "
+            f"containing the other, which leaves a ragged edge",
+            part.name,
+            (inter.centroid.x, inter.centroid.y),
+        )
 
     for drill in part.drills:
         disc = ShapelyPoint(*drill.center).buffer(drill.radius, quad_segs=32)
@@ -651,15 +694,17 @@ def validate_dxf_file(
                     f"treat it as straight segments",
                 )
             if not entity.closed:
-                severity = (
-                    Severity.ERROR if is_cut_layer(layer) else Severity.WARNING
-                )
-                report.add(
-                    "E_OPEN_CONTOUR",
-                    severity,
-                    f"polyline on {layer} is not closed",
-                    location=pts[0] if pts else None,
-                )
+                # Engraving is legitimately open: a ray, a hatch line or a
+                # signature is a stroke, not a boundary.  Warning about those
+                # would bury the one case that matters - an open contour on a
+                # layer something is supposed to cut through.
+                if layer != ENGRAVE:
+                    report.add(
+                        "E_OPEN_CONTOUR",
+                        Severity.ERROR if is_cut_layer(layer) else Severity.WARNING,
+                        f"polyline on {layer} is not closed",
+                        location=pts[0] if pts else None,
+                    )
             else:
                 rings.append((geo.dedupe(pts), layer))
         elif etype == "CIRCLE":

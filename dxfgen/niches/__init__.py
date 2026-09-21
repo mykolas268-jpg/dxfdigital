@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from .ashtrays import AshtrayGenerator
 from .base import Generator, GeneratorParams, ParamDoc
+from .boards import BoardGenerator
+from .coasters import CoasterGenerator
+from .stands import StandGenerator
 from .trays import TrayGenerator
 
 __all__ = [
@@ -68,4 +72,12 @@ def niche_names() -> list[str]:
     return sorted(REGISTRY)
 
 
-register(TrayGenerator())
+for _generator in (
+    TrayGenerator(),
+    BoardGenerator(),
+    CoasterGenerator(),
+    AshtrayGenerator(),
+    StandGenerator(),
+):
+    register(_generator)
+del _generator

@@ -14,6 +14,7 @@ asking for more variants never changes the ones already produced.
 from __future__ import annotations
 
 import logging
+import math
 import random
 import re
 from abc import ABC, abstractmethod
@@ -23,7 +24,7 @@ from typing import Any, ClassVar, Iterable, Mapping, Sequence
 from annotated_types import Ge, Gt, Le, Lt, MaxLen, MinLen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..core.design import Design, Machine, Mode
+from ..core.design import Design, Machine, Mode, Part
 from ..core.layers import (
     CUT_INSIDE,
     CUT_OUTSIDE,
@@ -44,6 +45,7 @@ __all__ = [
     "ParamDoc",
     "STOCK_SIZES",
     "smallest_stock",
+    "arrange_grid",
     "cutting_order_for",
     "slugify",
     "GOLDEN",
@@ -106,6 +108,39 @@ def slugify(*parts: object) -> str:
         if text:
             chunks.append(text)
     return "-".join(chunks)
+
+
+def arrange_grid(
+    parts: Sequence["Part"], gap: float, columns: int | None = None
+) -> None:
+    """Lay parts out in a grid by setting their origins, in place.
+
+    A deliberately simple placement: parts are put in row-major order on a
+    lattice sized by the widest and tallest part.  Real nesting, which packs
+    parts of different sizes together, belongs to the furniture work; this is
+    enough for a set of identical coasters plus a holder.
+
+    Args:
+        parts: The parts to place.  Their ``origin`` is overwritten.
+        gap: Space left between parts, in mm.
+        columns: Column count; defaults to a roughly square arrangement.
+
+    Raises:
+        ValueError: If ``parts`` is empty or ``gap`` is negative.
+    """
+    if not parts:
+        raise ValueError("nothing to arrange")
+    if gap < 0:
+        raise ValueError(f"gap must be >= 0, got {gap}")
+    if columns is None:
+        columns = max(1, int(round(math.sqrt(len(parts)))))
+    cell_w = max(part.size()[0] for part in parts) + gap
+    cell_h = max(part.size()[1] for part in parts) + gap
+    for index, part in enumerate(parts):
+        x0, y0, _, _ = part.bbox()
+        row, column = divmod(index, columns)
+        part.origin = (column * cell_w - x0, row * cell_h - y0)
+        part.rotation = 0.0
 
 
 def cutting_order_for(design: Design) -> list[str]:
