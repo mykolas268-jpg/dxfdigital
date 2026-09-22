@@ -310,8 +310,9 @@ Stated plainly, because finding these out at the machine is expensive.
   geometry, so a bookcase relies on the fit and, ideally, glue.
 - **Boxes come in one form**: a finger-jointed open box with an optional
   lift-off lid. No hinges, no dividers, no drawers.
-- **The leaf is a plain lens** and the pumpkin's lobes are engraved rather than
-  in the silhouette. Both read correctly; neither is the best shape in the set.
+- **The pumpkin's lobes are engraved** rather than cut into the silhouette.
+  That is the right call — modulating the profile makes it read as a flower —
+  but it means the silhouette alone is a rounded rectangle.
 - **A paw serving tray looks poor** — the recess follows the toes and inflates
   them. Use the paw as a plaque or a coaster.
 - **PDF templates are verified geometrically**, by figure dimensions and
