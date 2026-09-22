@@ -149,8 +149,9 @@ def test_an_empty_bundle_cannot_be_archived(tmp_path: Path) -> None:
 
 
 def test_the_archive_path_can_be_chosen(bundle: Bundle, tmp_path: Path) -> None:
-    target = zip_bundle(bundle, tmp_path / "deep" / "custom.zip")
-    assert target.exists() and target.name == "custom.zip"
+    written = zip_bundle(bundle, tmp_path / "deep" / "custom.zip")
+    assert [p.name for p in written] == ["custom.zip"]
+    assert written[0].exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -256,3 +257,113 @@ def test_progress_is_reported_per_design(tmp_path: Path) -> None:
 def test_a_bundle_summarises_itself(bundle: Bundle) -> None:
     line = bundle.summary()
     assert "coasters" in line and "4/4" in line
+
+
+# --------------------------------------------------------------------------- #
+# splitting for marketplaces that cap a single file
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def big(tmp_path_factory: pytest.TempPathFactory) -> Bundle:
+    root = tmp_path_factory.mktemp("split")
+    return build_bundle(
+        "coasters", count=6, seed=3, root=root, formats=("dxf", "preview", "readme"),
+        archive=False,
+    )
+
+
+def _split_limit_mb(bundle: Bundle, designs_per_part: float = 2.0) -> float:
+    """A limit that forces a split while still fitting every design.
+
+    The shared files ride in every part, so the budget left for designs is
+    the limit minus their size; a limit picked as a fraction of the whole
+    archive forgets that and asks for the impossible.
+    """
+    shared = sum(
+        path.stat().st_size
+        for path in (bundle.contact_sheet, bundle.license_path, bundle.index_path)
+        if path is not None
+    )
+    sizes = [
+        sum(f.stat().st_size for f in output.directory.rglob("*") if f.is_file())
+        for output in bundle.designs
+    ]
+    return (shared + max(sizes) * designs_per_part) / 1e6
+
+
+def test_an_unsplit_bundle_is_one_file(big: Bundle, tmp_path: Path) -> None:
+    written = zip_bundle(big, tmp_path / "one.zip", max_mb=None)
+    assert len(written) == 1
+    assert written[0].name == "one.zip"
+
+
+def test_a_bundle_over_the_limit_is_split(big: Bundle, tmp_path: Path) -> None:
+    limit = _split_limit_mb(big)
+    parts = zip_bundle(big, tmp_path / "part.zip", max_mb=limit)
+    assert len(parts) > 1
+    assert [p.name for p in parts] == [
+        f"part_{i}of{len(parts)}.zip" for i in range(1, len(parts) + 1)
+    ]
+
+
+def test_every_part_stays_under_the_limit(big: Bundle, tmp_path: Path) -> None:
+    limit_mb = _split_limit_mb(big)
+    parts = zip_bundle(big, tmp_path / "p.zip", max_mb=limit_mb)
+    for path in parts:
+        assert path.stat().st_size <= limit_mb * 1e6, path.name
+
+
+def test_the_parts_hold_every_design_exactly_once(
+    big: Bundle, tmp_path: Path
+) -> None:
+    parts = zip_bundle(big, tmp_path / "p.zip", max_mb=_split_limit_mb(big))
+    found: list[str] = []
+    for path in parts:
+        with zipfile.ZipFile(path) as archive:
+            found += [n for n in archive.namelist() if n.endswith(".dxf")]
+    assert len(found) == len(set(found)) == len(big.designs)
+
+
+def test_a_design_folder_is_never_split_across_parts(
+    big: Bundle, tmp_path: Path
+) -> None:
+    """Half a design folder is no use to anybody."""
+    parts = zip_bundle(big, tmp_path / "p.zip", max_mb=_split_limit_mb(big))
+    owner: dict[str, str] = {}
+    for path in parts:
+        with zipfile.ZipFile(path) as archive:
+            for name in archive.namelist():
+                bits = name.split("/")
+                if len(bits) < 3:
+                    continue  # a shared file, which every part carries
+                owner.setdefault(bits[1], path.name)
+                assert owner[bits[1]] == path.name, f"{bits[1]} spans parts"
+
+
+def test_every_part_carries_the_licence(big: Bundle, tmp_path: Path) -> None:
+    """A buyer with one part is still bound by terms they must be able to read."""
+    parts = zip_bundle(big, tmp_path / "p.zip", max_mb=_split_limit_mb(big))
+    assert len(parts) > 1
+    for path in parts:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+        assert f"coasters/{LICENSE_NAME}" in names
+        assert f"coasters/{INDEX_NAME}" in names
+
+
+def test_a_design_bigger_than_the_limit_is_reported(big: Bundle, tmp_path: Path) -> None:
+    shared = _split_limit_mb(big, designs_per_part=0.0)
+    with pytest.raises(ValueError, match="alone is"):
+        zip_bundle(big, tmp_path / "tiny.zip", max_mb=shared + 0.001)
+
+
+def test_a_limit_smaller_than_the_shared_files_is_reported(
+    big: Bundle, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="over the"):
+        zip_bundle(big, tmp_path / "x.zip", max_mb=0.0005)
+
+
+def test_the_bundle_records_every_part(big: Bundle, tmp_path: Path) -> None:
+    parts = zip_bundle(big, tmp_path / "p.zip", max_mb=_split_limit_mb(big))
+    assert big.archives == parts
+    assert big.archive == parts[0]

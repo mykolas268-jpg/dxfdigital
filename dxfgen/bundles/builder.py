@@ -33,6 +33,7 @@ log = logging.getLogger("dxfgen")
 __all__ = [
     "LICENSE_SUMMARY",
     "ALL_FORMATS",
+    "MARKETPLACE_FILE_LIMIT_MB",
     "DEFAULT_SELLER",
     "CONTACT_SHEET_NAME",
     "LICENSE_NAME",
@@ -53,6 +54,11 @@ __all__ = [
 ALL_FORMATS: tuple[str, ...] = (
     "dxf", "svg", "pdf", "preview", "mockup", "assembly", "readme",
 )
+
+#: Etsy, Gumroad and most other download marketplaces cap a single file at
+#: 20 MB, so a bundle is split at that size by default.  A zip nobody can
+#: upload is worse than two they can.
+MARKETPLACE_FILE_LIMIT_MB: float = 20.0
 
 DEFAULT_SELLER: str = "the seller"
 
@@ -471,6 +477,7 @@ class Bundle:
     license_path: Path | None = None
     index_path: Path | None = None
     archive: Path | None = None
+    archives: list[Path] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
 
     @property
@@ -569,24 +576,88 @@ def _tiles_for(bundle: Bundle, workspace: Path) -> list[Tile]:
     return tiles
 
 
-def zip_bundle(bundle: Bundle, path: str | Path | None = None) -> Path:
-    """Package a bundle into a zip ready to upload.
+def _shared_files(bundle: Bundle) -> list[Path]:
+    """The contact sheet, licence and index, which every part carries."""
+    return [
+        path
+        for path in (bundle.contact_sheet, bundle.license_path, bundle.index_path)
+        if path is not None
+    ]
+
+
+def _split_designs(
+    bundle: Bundle, budget: int
+) -> list[list[DesignOutput]]:
+    """Group designs into parts that each fit the budget.
+
+    Packed by the files' size on disk rather than compressed size, which is
+    the conservative direction: zipping only shrinks, so a part inside the
+    budget uncompressed is inside it compressed.  A design is never split
+    across parts, because half a design folder is no use to anybody.
+
+    Args:
+        bundle: The bundle to split.
+        budget: Bytes available to designs in one part, shared files already
+            deducted.
+
+    Returns:
+        One list of designs per part, in bundle order.
+
+    Raises:
+        ValueError: If a single design does not fit the budget on its own.
+    """
+    def weight(output: DesignOutput) -> int:
+        return sum(f.stat().st_size for f in output.directory.rglob("*") if f.is_file())
+
+    parts: list[list[DesignOutput]] = []
+    current: list[DesignOutput] = []
+    used = 0
+    for output in bundle.designs:
+        size = weight(output)
+        if size > budget:
+            raise ValueError(
+                f"{output.design.slug} alone is {size / 1e6:.1f} MB, over the "
+                f"{budget / 1e6:.1f} MB left for designs in one part; raise the "
+                f"limit or drop an output format"
+            )
+        if current and used + size > budget:
+            parts.append(current)
+            current, used = [], 0
+        current.append(output)
+        used += size
+    if current:
+        parts.append(current)
+    return parts
+
+
+def zip_bundle(
+    bundle: Bundle, path: str | Path | None = None, max_mb: float | None = None
+) -> list[Path]:
+    """Package a bundle into one or more zips ready to upload.
 
     Only the files this run wrote go in.  The archive is never built by
     walking the output directory, because that directory outlives the run: a
     previous bundle with a different seed leaves folders behind, and they must
     not end up in someone's download.
 
+    Over ``max_mb`` the bundle is split, because most download marketplaces
+    cap a single file and a 25 MB zip cannot be uploaded at all.  Every part
+    carries the licence, the index and the contact sheet, so a buyer who has
+    only one part still has the terms they are bound by.
+
     Args:
         bundle: The bundle to package.
-        path: Destination zip; defaults to ``<directory>/../<niche>_bundle.zip``,
-            which keeps it outside the folder it is archiving.
+        path: Destination zip; defaults to ``<directory>/../<niche>_bundle.zip``.
+            When the bundle splits, the parts are named after it.
+        max_mb: Largest a single part may be, in megabytes, or ``None`` for one
+            archive of any size.
 
     Returns:
-        The written path.
+        The written paths, in order.
 
     Raises:
-        ValueError: If the bundle has no designs.
+        ValueError: If the bundle has no designs, or a single design is bigger
+            than the limit on its own.
     """
     if not bundle.designs:
         raise ValueError(f"nothing to archive: {bundle.niche} bundle is empty")
@@ -597,11 +668,44 @@ def zip_bundle(bundle: Bundle, path: str | Path | None = None) -> Path:
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     root = bundle.directory
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file in bundle.files():
-            archive.write(file, arcname=str(Path(bundle.niche) / file.relative_to(root)))
-    bundle.archive = target
-    return target
+    shared = _shared_files(bundle)
+
+    if max_mb is None or max_mb <= 0:
+        groups = [list(bundle.designs)]
+    else:
+        overhead = sum(f.stat().st_size for f in shared)
+        budget = int(max_mb * 1e6) - overhead
+        if budget <= 0:
+            raise ValueError(
+                f"the licence, index and contact sheet alone are "
+                f"{overhead / 1e6:.1f} MB, over the {max_mb:g} MB limit"
+            )
+        groups = _split_designs(bundle, budget)
+
+    written: list[Path] = []
+    total = len(groups)
+    for number, group in enumerate(groups, 1):
+        part = (
+            target
+            if total == 1
+            else target.with_name(f"{target.stem}_{number}of{total}{target.suffix}")
+        )
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as archive:
+            files = [
+                file
+                for output in group
+                for file in sorted(output.directory.rglob("*"))
+                if file.is_file()
+            ] + shared
+            for file in files:
+                archive.write(
+                    file, arcname=str(Path(bundle.niche) / file.relative_to(root))
+                )
+        written.append(part)
+
+    bundle.archives = written
+    bundle.archive = written[0]
+    return written
 
 
 def build_bundle(
@@ -615,6 +719,7 @@ def build_bundle(
     seller: str = DEFAULT_SELLER,
     contact_sheet: bool = True,
     archive: bool = True,
+    max_zip_mb: float | None = MARKETPLACE_FILE_LIMIT_MB,
     progress: Callable[[str], None] | None = None,
 ) -> Bundle:
     """Generate, validate and package a whole niche.
@@ -634,6 +739,8 @@ def build_bundle(
         seller: Name used throughout the licence.
         contact_sheet: Render the grid image.
         archive: Build the zip.
+        max_zip_mb: Split the archive into parts no larger than this, or
+            ``None`` for one archive of any size.
         progress: Called with a short status line as each design is written.
 
     Returns:
@@ -697,7 +804,7 @@ def build_bundle(
     if archive:
         if progress:
             progress(f"{generator.niche}: archiving")
-        zip_bundle(bundle)
+        zip_bundle(bundle, max_mb=max_zip_mb)
     return bundle
 
 

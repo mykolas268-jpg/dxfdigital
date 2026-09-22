@@ -174,8 +174,12 @@ The same seed and count reproduce the same designs exactly, and raising the
 count extends the set rather than reshuffling it: variant *i* depends only on
 `(seed, i)`.
 
-A 50-design bundle with mockups lands around 24 MB, over the 20 MB per-file cap
-most marketplaces impose. The CLI says so and tells you which formats to drop.
+Bundles are split at 20 MB, because Etsy, Gumroad and most other download
+marketplaces cap a single file there and a 25 MB zip cannot be uploaded at all.
+Every part carries the licence, the index and the contact sheet, so a buyer
+who has only one part still has the terms they are bound by, and a design
+folder is never split across parts. `--max-zip-mb 0` gives one file of any
+size.
 
 ### `dxfgen validate <file.dxf> ...`
 
@@ -280,7 +284,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1046 tests
+python -m pytest          # 1055 tests
 ```
 
 ```

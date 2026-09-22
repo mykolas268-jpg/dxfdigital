@@ -24,6 +24,7 @@ from rich.table import Table
 
 from .bundles.builder import (
     ALL_FORMATS,
+    MARKETPLACE_FILE_LIMIT_MB,
     DEFAULT_SELLER,
     Bundle,
     build_all,
@@ -39,10 +40,7 @@ __all__ = ["app", "main"]
 
 
 
-#: Etsy, Gumroad and most other download marketplaces cap a single file at
-#: 20 MB.  A bundle over that is not an error, but it cannot be uploaded as
-#: one file, so say so rather than let the seller find out at upload time.
-MARKETPLACE_FILE_LIMIT_MB: float = 20.0
+
 
 app = typer.Typer(
     add_completion=False,
@@ -343,19 +341,15 @@ def _report_bundle(bundle: Bundle) -> None:
         )
     if bundle.contact_sheet:
         out.print(f"    {bundle.contact_sheet}")
-    if bundle.archive:
-        size = bundle.archive.stat().st_size / 1e6
-        out.print(f"    {bundle.archive}  ({size:.1f} MB)")
-        if size > MARKETPLACE_FILE_LIMIT_MB:
-            out.print(
-                f"    [yellow]over the {MARKETPLACE_FILE_LIMIT_MB:g} MB per-file "
-                "limit most marketplaces impose[/yellow] (Etsy among them). "
-                "The mockups are the bulk:"
-            )
-            out.print(
-                "      drop them with [bold]-f dxf -f svg -f pdf -f preview "
-                "-f readme[/bold], or split the count across two bundles."
-            )
+    for part in bundle.archives:
+        size = part.stat().st_size / 1e6
+        out.print(f"    {part}  ({size:.1f} MB)")
+    if len(bundle.archives) > 1:
+        out.print(
+            f"    [dim]split into {len(bundle.archives)} parts to stay under "
+            f"the per-file limit; each carries the licence, index and contact "
+            f"sheet[/dim]"
+        )
 
 
 @app.command()
@@ -390,6 +384,14 @@ def bundle(
     archive: Annotated[
         bool, typer.Option("--zip/--no-zip", help="Build the zip.")
     ] = True,
+    max_zip_mb: Annotated[
+        float,
+        typer.Option(
+            "--max-zip-mb",
+            min=0.0,
+            help="Split the zip into parts this big; 0 for one file of any size.",
+        ),
+    ] = MARKETPLACE_FILE_LIMIT_MB,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Only print the final summary.")
     ] = False,
@@ -418,6 +420,7 @@ def bundle(
         seller=seller,
         contact_sheet=contact_sheet,
         archive=archive,
+        max_zip_mb=max_zip_mb or None,
         progress=status,
     )
     for built in bundles:
