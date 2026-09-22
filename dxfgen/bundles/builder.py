@@ -62,7 +62,7 @@ _SKIP_WORDS: dict[str, str] = {
 }
 
 LICENSE_SUMMARY = """LICENSE SUMMARY
-  You MAY cut this design and sell the physical items you make from it,
+  You MAY cut these files and sell the physical items you make from them,
   including commercially and in unlimited quantity.
   You MAY modify the files for your own production.
   You MAY NOT resell, share, sub-license or redistribute the digital files
