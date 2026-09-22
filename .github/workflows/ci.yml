@@ -4,10 +4,12 @@ on:
   push:
   pull_request:
 
-# A push to a branch that already has an open pull request starts two runs.
-# Keep only the newest one per ref.
+# Pushing twice in quick succession leaves the first run doing work nobody
+# will read, so the newer run cancels it.  A push to a branch with an open
+# pull request still produces two runs, one per event, because their refs
+# differ; that is the cost of checking both, and the suite is four minutes.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
