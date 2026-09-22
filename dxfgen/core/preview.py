@@ -32,6 +32,13 @@ from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import PathPatch  # noqa: E402
 from matplotlib.path import Path as MplPath  # noqa: E402
 
+from .assembly import (  # noqa: E402
+    Plane,
+    Point3,
+    depth_of,
+    panel_prism,
+    project,
+)
 from .design import Design, Part  # noqa: E402
 from .geometry import Point, Ring, ensure_ccw, ensure_cw  # noqa: E402
 
@@ -39,6 +46,8 @@ __all__ = [
     "WOOD_PALETTES",
     "render_preview",
     "render_mockup",
+    "render_assembly",
+    "assembled_size",
     "compound_path",
 ]
 
@@ -549,4 +558,183 @@ def _drop_shadow(ax: "matplotlib.axes.Axes", body: MplPath, span: float) -> None
             zorder=0,
             path_effects=effects,
         )
+    )
+
+
+# --------------------------------------------------------------------------- #
+# isometric assembly drawing
+# --------------------------------------------------------------------------- #
+#: Face tone per plane.  Lighting is flat and faked: a top face is lightest, a
+#: front face middling, a side face darkest.  It carries no physical claim, it
+#: is just what makes a drawing read as solid rather than as a wireframe.
+_ASSEMBLY_SHADE: dict[Plane, float] = {
+    Plane.FLAT: 1.00,
+    Plane.FRONT: 0.86,
+    Plane.SIDE: 0.72,
+}
+
+#: Tone for the extruded edge of a panel, relative to its own face.
+_EDGE_SHADE: float = 0.62
+
+_ASSEMBLY_BACKGROUND = "#f3efe7"
+_ASSEMBLY_LINE = "#6b5334"
+
+
+def _shaded(base: tuple[float, float, float], factor: float) -> tuple[float, float, float]:
+    """Darken a colour by a factor, staying in range."""
+    return tuple(min(1.0, max(0.0, channel * factor)) for channel in base)
+
+
+def _iso_path(points: Sequence[Point3], holes: Iterable[Sequence[Point3]] = ()) -> MplPath:
+    """Project a 3D face and its holes into one matplotlib path."""
+    return compound_path(
+        [project(point) for point in points],
+        [[project(point) for point in hole] for hole in holes],
+    )
+
+
+def render_assembly(
+    design: Design,
+    path: str | Path,
+    px_width: int = 1400,
+    dpi: int = 200,
+    margin_frac: float = 0.06,
+    caption: bool = True,
+    background: str = _ASSEMBLY_BACKGROUND,
+) -> Path:
+    """Draw the assembled object in isometric projection.
+
+    For a flat product the cut file is already the picture, but a box, a dock
+    or a bookcase is a nest of rectangles until it is put together.  This draws
+    what the buyer ends up with.
+
+    Panels are painted back to front by centroid depth, which is exact for the
+    orthogonal, non-interpenetrating assemblies this supports and is why there
+    is no hidden-surface solver here.
+
+    Args:
+        design: The design to draw; it must carry an assembly.
+        path: Destination PNG path; parent directories are created.
+        px_width: Image width in pixels.
+        dpi: Dots per inch used to size the figure.
+        margin_frac: Blank margin as a fraction of the drawing's larger side.
+        caption: Draw the assembled dimensions underneath.
+        background: Page colour; a contact sheet passes its own so the tiles
+            do not sit in grey boxes.
+
+    Returns:
+        The written path.
+
+    Raises:
+        ValueError: If the design has no assembly.
+    """
+    if design.assembly is None:
+        raise ValueError(
+            f"design {design.slug!r} has no assembly to draw; it is a flat product"
+        )
+    placed = design.normalized()
+    by_name = {part.name: part for part in placed.parts}
+    thickness = placed.thickness
+
+    panels = []
+    for placement in placed.assembly.placements:
+        part = by_name[placement.part]
+        near, far, quads = panel_prism(part.outline, placement, thickness)
+        holes3 = [
+            panel_prism(hole, placement, thickness)[0]
+            for hole in part.holes
+            if len(hole) >= 3
+        ]
+        centre = tuple(
+            sum(point[axis] for point in near + far) / (len(near) + len(far))
+            for axis in range(3)
+        )
+        panels.append((depth_of(centre), placement, near, far, quads, holes3))
+    panels.sort(key=lambda entry: entry[0])
+
+    screen = [
+        project(point)
+        for _d, _p, near, far, _q, _h in panels
+        for point in (*near, *far)
+    ]
+    x0, y0, x1, y1 = (
+        min(p[0] for p in screen), min(p[1] for p in screen),
+        max(p[0] for p in screen), max(p[1] for p in screen),
+    )
+    span = max(x1 - x0, y1 - y0)
+    margin = span * margin_frac
+    caption_space = span * 0.09 if caption else 0.0
+    fig, ax = _figure(
+        (x0, y0 - caption_space, x1, y1), margin, px_width, dpi, background
+    )
+
+    base = _palette_for(placed.material)[0]
+    line = max(0.4, (px_width / dpi) * 0.13)
+    for _depth, placement, near, far, quads, holes3 in panels:
+        face = _shaded(base, _ASSEMBLY_SHADE[placement.plane])
+        edge = _shaded(face, _EDGE_SHADE)
+        ax.add_patch(
+            PathPatch(_iso_path(far), facecolor=edge, edgecolor="none", zorder=1)
+        )
+        for quad in quads:
+            ax.add_patch(
+                PathPatch(_iso_path(quad), facecolor=edge, edgecolor="none", zorder=2)
+            )
+        ax.add_patch(
+            PathPatch(
+                _iso_path(near, holes3),
+                facecolor=face,
+                edgecolor=_ASSEMBLY_LINE,
+                linewidth=line,
+                zorder=3,
+            )
+        )
+
+    if caption:
+        width, depth, height = assembled_size(placed)
+        text = (
+            f"{width:.0f} x {depth:.0f} x {height:.0f} mm assembled  |  "
+            f"{placed.thickness:g} mm {placed.material}"
+        )
+        points_per_mm = (px_width / dpi * 72.0) / (x1 - x0 + 2 * margin)
+        ax.text(
+            (x0 + x1) / 2.0,
+            y0 - caption_space * 0.62,
+            text,
+            ha="center",
+            va="center",
+            fontsize=max(5.0, span * 0.022 * points_per_mm),
+            color=PREVIEW_COLORS["caption"],
+        )
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi, facecolor=background)
+    return out
+
+
+def assembled_size(design: Design) -> tuple[float, float, float]:
+    """The finished object's overall size in mm.
+
+    Args:
+        design: A design carrying an assembly.
+
+    Returns:
+        ``(width, depth, height)``.
+
+    Raises:
+        ValueError: If the design has no assembly.
+    """
+    if design.assembly is None:
+        raise ValueError(f"design {design.slug!r} has no assembly")
+    by_name = {part.name: part for part in design.parts}
+    points: list[Point3] = []
+    for placement in design.assembly.placements:
+        near, far, _ = panel_prism(
+            by_name[placement.part].outline, placement, design.thickness
+        )
+        points.extend(near)
+        points.extend(far)
+    return tuple(
+        max(p[axis] for p in points) - min(p[axis] for p in points) for axis in range(3)
     )

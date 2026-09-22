@@ -27,6 +27,7 @@ from enum import Enum
 from pydantic import Field, model_validator
 
 from ..core import geometry as geo
+from ..core.assembly import Assembly, Placement, Plane
 from ..core.design import Design, Label, Part
 from ..core.geometry import Point, Ring
 from .base import (
@@ -45,6 +46,10 @@ __all__ = ["FurnitureForm", "FurnitureParams", "FurnitureGenerator"]
 SHEET = (1220.0, 2440.0)
 #: Space left between nested sheets when a design needs more than one.
 SHEET_GAP = 60.0
+
+#: Upper bound on sampled shelf counts; the schema allows more, but past
+#: this the shelves are closer together than anything you would stand on one.
+MAX_SHELVES: int = 6
 
 
 class FurnitureForm(str, Enum):
@@ -241,13 +246,19 @@ def _arched(params: FurnitureParams, ring: Ring, width: float) -> Ring:
     return geo.ensure_ccw(geo.dedupe(list(cut.exterior.coords)))
 
 
-def _shelf_unit(params: FurnitureParams) -> list[Part]:
-    """Two uprights and a stack of shelves."""
-    thickness = params.thickness
-    inner_width = params.width - 2.0 * thickness
-    spans = _tab_spans(params, params.depth)
-    length_mortise, _ = params.mortise_size()
+def shelf_span(params: FurnitureParams) -> tuple[float, float]:
+    """The lowest and highest a shelf's underside may sit, in mm.
 
+    Args:
+        params: Furniture parameters.
+
+    Returns:
+        ``(lowest, highest)``.
+
+    Raises:
+        ValueError: If the arch and the top leave no room for a shelf.
+    """
+    thickness = params.thickness
     # The lowest shelf has to clear the foot arch: a mortise cut into the arch
     # leaves a sliver of material between the two.
     margin = params.min_wall + params.relief_margin()
@@ -259,16 +270,70 @@ def _shelf_unit(params: FurnitureParams) -> list[Part]:
             f"a {params.height:g} mm upright with a {params.foot_arch:g} mm "
             f"arch has no room between the feet and the top for a shelf"
         )
+    return lowest, highest
+
+
+def shelves_for_spacing(params: FurnitureParams, spacing: float) -> int:
+    """How many shelves land about ``spacing`` apart in this upright.
+
+    Shelves are spread between the lowest and highest a mortise may sit, so
+    ``n`` shelves leave ``n - 1`` gaps across that span, not ``n``.  Sizing by
+    height over spacing instead is how a 1560 mm upright ends up with two
+    shelves 1400 mm apart.
+
+    Args:
+        params: Furniture parameters; only the upright matters, not the
+            shelf count already on them.
+        spacing: Wanted clear distance between shelves, in mm.
+
+    Returns:
+        A shelf count of at least two, capped at :data:`MAX_SHELVES`.
+
+    Raises:
+        ValueError: If the upright has no room for a shelf at all.
+    """
+    if spacing <= 0.0:
+        raise ValueError(f"spacing must be > 0, got {spacing}")
+    lowest, highest = shelf_span(params)
+    return max(2, min(MAX_SHELVES, 1 + round((highest - lowest) / spacing)))
+
+
+def shelf_levels(params: FurnitureParams) -> list[float]:
+    """The height of each shelf's underside above the floor, in mm.
+
+    Both the upright's mortises and the assembly drawing read this, so a
+    shelf cannot be drawn at a height its mortise was not cut for.
+
+    Args:
+        params: Furniture parameters.
+
+    Returns:
+        One height per shelf, lowest first.
+
+    Raises:
+        ValueError: If the shelves do not fit between the feet and the top.
+    """
+    lowest, highest = shelf_span(params)
+    thickness = params.thickness
     if params.shelves == 1:
-        heights = [lowest]
-    else:
-        step = (highest - lowest) / (params.shelves - 1)
-        heights = [lowest + index * step for index in range(params.shelves)]
-        if step < thickness + 4.0 * params.min_wall:
-            raise ValueError(
-                f"{params.shelves} shelves in a {params.height:g} mm upright "
-                f"leaves only {step:.0f} mm between them"
-            )
+        return [lowest]
+    step = (highest - lowest) / (params.shelves - 1)
+    if step < thickness + 4.0 * params.min_wall:
+        raise ValueError(
+            f"{params.shelves} shelves in a {params.height:g} mm upright "
+            f"leaves only {step:.0f} mm between them"
+        )
+    return [lowest + index * step for index in range(params.shelves)]
+
+
+def _shelf_unit(params: FurnitureParams) -> list[Part]:
+    """Two uprights and a stack of shelves."""
+    thickness = params.thickness
+    inner_width = params.width - 2.0 * thickness
+    spans = _tab_spans(params, params.depth)
+    length_mortise, _ = params.mortise_size()
+
+    heights = shelf_levels(params)
 
     holes: list[Ring] = []
     for level in heights:
@@ -364,6 +429,56 @@ def _cross_table(params: FurnitureParams) -> list[Part]:
     ]
 
 
+def _assembly(params: FurnitureParams) -> Assembly:
+    """Where every panel stands in the finished piece.
+
+    Part names here are the ones nesting leaves behind: a part cut twice is
+    expanded into ``upright-1`` and ``upright-2``, so the assembly names those
+    rather than the single ``upright`` the builder created.
+
+    Args:
+        params: Furniture parameters.
+
+    Returns:
+        The assembly.
+
+    Raises:
+        ValueError: If the shelves do not fit, which shelf_levels reports.
+    """
+    thickness = params.thickness
+    width, depth, height = params.width, params.depth, params.height
+
+    if params.form is FurnitureForm.SHELF:
+        placements = [
+            Placement("upright-1", Plane.SIDE, (0.0, 0.0, 0.0)),
+            Placement("upright-2", Plane.SIDE, (width - thickness, 0.0, 0.0)),
+        ]
+        # A shelf's tabs reach out past its body into the uprights' mortises,
+        # so its own origin sits one thickness in and the tabs land on zero.
+        placements += [
+            Placement(f"shelf-{index + 1}", Plane.FLAT, (thickness, 0.0, level))
+            for index, level in enumerate(shelf_levels(params))
+        ]
+        caption = (
+            f"{width:g} x {depth:g} x {height:g} mm shelf unit, "
+            f"{params.shelves} shelves"
+        )
+        return Assembly(tuple(placements), caption)
+
+    # Cross-lapped table: each leg spans one axis, inset by the corner radius
+    # it was shortened by, and they pass through each other at the centre.
+    radius = params.corner_radius
+    placements = [
+        Placement("leg-long", Plane.FRONT, (radius, (depth - thickness) / 2.0, 0.0)),
+        Placement("leg-short", Plane.SIDE, ((width - thickness) / 2.0, radius, 0.0)),
+        Placement("top", Plane.FLAT, (0.0, 0.0, height - thickness)),
+    ]
+    return Assembly(
+        tuple(placements),
+        f"{width:g} x {depth:g} x {height:g} mm cross-leg table",
+    )
+
+
 class FurnitureGenerator(Generator):
     """Generates flat-pack slot-together furniture."""
 
@@ -439,6 +554,7 @@ class FurnitureGenerator(Generator):
             params=params.model_dump(mode="json"),
             notes=self._notes(params, len(sheets), len(placed)),
             limits=params.validation_config(),
+            assembly=_assembly(params),
         )
         design.cutting_order = cutting_order_for(design)
         return design
@@ -507,13 +623,18 @@ class FurnitureGenerator(Generator):
             width = float(rng.randrange(60, 100) * 10)
             depth = float(rng.randrange(24, 40) * 10)
             height = float(rng.randrange(70, 180) * 10)
-            shelves = rng.choice([2, 3, 3, 4, 5])
+            # Shelf count follows the height.  Drawn independently it gives a
+            # 1560 mm upright with two shelves 1400 mm apart, which is a frame
+            # rather than a bookcase - obvious the moment the piece is drawn
+            # assembled, invisible while it is a nest of flat panels.
+            spacing = float(rng.randrange(280, 420, 20))
+            shelves = 2  # replaced below, once the upright is known
         else:
             width = float(rng.randrange(45, 110) * 10)
             depth = float(rng.randrange(35, 70) * 10)
             height = float(rng.randrange(34, 76) * 10)
             shelves = 1
-        return FurnitureParams(
+        drawn = FurnitureParams(
             form=form,
             thickness=thickness,
             width=width,
@@ -526,4 +647,11 @@ class FurnitureGenerator(Generator):
             foot_inset=float(rng.randrange(50, 100, 10)),
             corner_radius=float(rng.randrange(0, 20, 4)),
             material=rng.choice(["birch plywood", "poplar plywood", "oak veneer ply"]),
+        )
+        if form is not FurnitureForm.SHELF:
+            return drawn
+        # The shelf count needs the upright it goes in, so it is settled once
+        # the rest is drawn rather than guessed beforehand.
+        return drawn.model_copy(
+            update={"shelves": shelves_for_spacing(drawn, spacing)}
         )

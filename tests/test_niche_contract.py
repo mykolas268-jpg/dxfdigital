@@ -114,10 +114,47 @@ def test_a_design_exports_to_a_clean_dxf(gen: Generator, tmp_path: Path) -> None
 
 @pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
 def test_a_design_exports_every_format(gen: Generator, tmp_path: Path) -> None:
-    out = write_design(gen.make(), tmp_path)
-    assert set(out.files) == {"dxf", "svg", "pdf", "preview", "mockup", "readme"}
+    """Every design writes every flat output, and nothing is empty."""
+    design = gen.make()
+    out = write_design(design, tmp_path)
+    assert {"dxf", "svg", "pdf", "preview", "mockup", "readme"} <= set(out.files)
     for kind, path in out.files.items():
         assert path.stat().st_size > 0, kind
+
+
+@pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
+def test_an_assembly_drawing_appears_exactly_when_there_is_one(
+    gen: Generator, tmp_path: Path
+) -> None:
+    """A flat product has nothing to assemble; a box, dock or shelf does."""
+    design = gen.make()
+    out = write_design(design, tmp_path)
+    assert ("assembly" in out.files) == (design.assembly is not None)
+
+
+@pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
+def test_an_assembly_only_places_parts_the_design_cuts(gen: Generator) -> None:
+    """A placement naming a part that is not cut is a generator bug."""
+    for design in gen.variants(4, seed=17):
+        if design.assembly is None:
+            continue
+        names = {part.name for part in design.parts}
+        assert design.assembly.missing_from(names) == set()
+        assert design.assembly.caption
+
+
+@pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
+def test_an_assembly_is_no_smaller_than_the_parts_in_it(gen: Generator) -> None:
+    """A wrong placement usually shows up as an assembly that collapses."""
+    from dxfgen.core.preview import assembled_size
+
+    for design in gen.variants(3, seed=17):
+        if design.assembly is None:
+            continue
+        box = assembled_size(design)
+        biggest = max(max(part.size()) for part in design.parts)
+        assert max(box) >= biggest * 0.5, f"{design.slug} assembles to {box}"
+        assert min(box) >= design.thickness
 
 
 @pytest.mark.parametrize("gen", GENERATORS, ids=IDS)

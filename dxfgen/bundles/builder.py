@@ -22,7 +22,7 @@ from ..core.export_pdf import A4, PaperSize, plan_pages, write_pdf
 from ..core.export_svg import write_svg
 from ..core.layers import layer_def
 from ..core.limits import ValidationConfig
-from ..core.preview import render_mockup, render_preview
+from ..core.preview import assembled_size, render_assembly, render_mockup, render_preview
 from ..core.validate import Report
 from ..niches import Generator, get_generator, niche_names
 from ..niches.base import Skip, VariantRun, material_phrase
@@ -32,6 +32,7 @@ log = logging.getLogger("dxfgen")
 
 __all__ = [
     "LICENSE_SUMMARY",
+    "ALL_FORMATS",
     "DEFAULT_SELLER",
     "CONTACT_SHEET_NAME",
     "LICENSE_NAME",
@@ -48,6 +49,11 @@ __all__ = [
 ]
 
 #: Whose licence it is.  A seller replaces this with their shop name.
+#: Every per-design output kind, in the order they are written.
+ALL_FORMATS: tuple[str, ...] = (
+    "dxf", "svg", "pdf", "preview", "mockup", "assembly", "readme",
+)
+
 DEFAULT_SELLER: str = "the seller"
 
 CONTACT_SHEET_NAME: str = "CONTACT_SHEET.png"
@@ -176,6 +182,12 @@ def readme_text(design: Design, paper: PaperSize = A4) -> str:
         f"{plan.total} sheet(s) of {plan.sheet.name}",
         f"  {design.slug}_preview.png    what the file contains",
         f"  {design.slug}_mockup.png     what it looks like cut",
+    ]
+    if design.assembly is not None:
+        lines.append(
+            f"  {design.slug}_assembly.png   what it looks like put together"
+        )
+    lines += [
         "",
         "PRINTING THE TEMPLATE",
         "  Print at 100% scale with page scaling and 'fit to page' turned off,",
@@ -194,7 +206,7 @@ def readme_text(design: Design, paper: PaperSize = A4) -> str:
 def write_design(
     design: Design,
     root: str | Path = "output",
-    formats: tuple[str, ...] = ("dxf", "svg", "pdf", "preview", "mockup", "readme"),
+    formats: tuple[str, ...] = ALL_FORMATS,
     paper: PaperSize = A4,
     config: ValidationConfig | None = None,
 ) -> DesignOutput:
@@ -217,7 +229,7 @@ def write_design(
         ValidationError: If the design fails validation.
         ValueError: If ``formats`` names something unknown.
     """
-    unknown = set(formats) - {"dxf", "svg", "pdf", "preview", "mockup", "readme"}
+    unknown = set(formats) - set(ALL_FORMATS)
     if unknown:
         raise ValueError(f"unknown output format(s): {', '.join(sorted(unknown))}")
 
@@ -247,6 +259,12 @@ def write_design(
     if "mockup" in formats:
         out.files["mockup"] = render_mockup(
             placed, directory / f"{placed.slug}_mockup.png"
+        )
+    # Only a design that assembles into something has an assembly to draw; for
+    # a flat product the cut file already is the picture.
+    if "assembly" in formats and placed.assembly is not None:
+        out.files["assembly"] = render_assembly(
+            placed, directory / f"{placed.slug}_assembly.png"
         )
     if "readme" in formats:
         path = directory / "README.txt"
@@ -402,6 +420,8 @@ def index_text(bundle: "Bundle") -> str:
         "  <slug>_template.pdf   1:1 print template",
         "  <slug>_preview.png    what the file contains",
         "  <slug>_mockup.png     what it looks like cut",
+        "  <slug>_assembly.png   what it looks like put together, where it "
+        "assembles",
         "  README.txt            material, depths, cutting order, licence summary",
         "",
         "ALSO IN THIS BUNDLE",
@@ -520,20 +540,28 @@ def _tiles_for(bundle: Bundle, workspace: Path) -> list[Tile]:
     tiles: list[Tile] = []
     for output in bundle.designs:
         design = output.design
-        width, height = design.size()
-        image = render_preview(
-            design,
-            workspace / f"{design.slug}.png",
-            px_width=900,
-            caption=False,
-            labels=False,
-        )
+        target = workspace / f"{design.slug}.png"
+        if design.assembly is None:
+            image = render_preview(
+                design, target, px_width=900, caption=False, labels=False
+            )
+            width, height = design.size()
+            size = f"{width:.0f} x {height:.0f} mm"
+        else:
+            # A nest of flat panels is what the file contains and the worst
+            # possible advertisement for a bookcase.  Where the design knows
+            # what it assembles into, the sheet shows that instead.
+            image = render_assembly(
+                design, target, px_width=900, caption=False, background="#ffffff"
+            )
+            width, depth, height = assembled_size(design)
+            size = f"{width:.0f} x {depth:.0f} x {height:.0f} mm assembled"
         tiles.append(
             Tile(
                 image=image,
                 caption=design.name,
                 subcaption=(
-                    f"{width:.0f} x {height:.0f} mm  |  "
+                    f"{size}  |  "
                     f"{material_phrase(design.thickness, design.material)}"
                 ),
             )
@@ -581,7 +609,7 @@ def build_bundle(
     count: int,
     seed: int = 0,
     root: str | Path = "output",
-    formats: tuple[str, ...] = ("dxf", "svg", "pdf", "preview", "mockup", "readme"),
+    formats: tuple[str, ...] = ALL_FORMATS,
     paper: PaperSize = A4,
     config: ValidationConfig | None = None,
     seller: str = DEFAULT_SELLER,

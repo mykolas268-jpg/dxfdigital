@@ -17,6 +17,7 @@ from shapely.ops import unary_union
 
 from . import geometry as geo
 from .geometry import Point, Ring
+from .assembly import Assembly
 from .limits import ValidationConfig
 from .layers import (
     CUT_INSIDE,
@@ -411,6 +412,9 @@ class Design:
         limits: The manufacturing limits this design was built to, used by
             the validator unless it is given others.
         seed: Seed used by the variant generator, when applicable.
+        assembly: Where each part sits in the finished object, for designs
+            that assemble into something.  ``None`` for a flat product, where
+            the cut file already is the picture.
     """
 
     slug: str
@@ -427,12 +431,20 @@ class Design:
     cutting_order: list[str] = field(default_factory=list)
     limits: ValidationConfig = field(default_factory=ValidationConfig)
     seed: int | None = None
+    assembly: "Assembly | None" = None
 
     def __post_init__(self) -> None:
         if not self.parts:
             raise ValueError(f"design {self.slug!r} has no parts")
         if self.thickness <= 0:
             raise ValueError(f"thickness must be > 0, got {self.thickness}")
+        if self.assembly is not None:
+            unknown = self.assembly.missing_from(part.name for part in self.parts)
+            if unknown:
+                raise ValueError(
+                    f"design {self.slug!r} assembles part(s) it does not cut: "
+                    f"{', '.join(sorted(unknown))}"
+                )
 
     # ------------------------------------------------------------- placement
     def placed_parts(self) -> list[Part]:

@@ -25,6 +25,7 @@ from enum import Enum
 from pydantic import Field, model_validator
 
 from ..core import geometry as geo
+from ..core.assembly import Assembly, Placement, Plane
 from ..core.design import Design, Label, Part
 from ..core.geometry import Ring
 from .base import (
@@ -163,6 +164,21 @@ class StandParams(GeneratorParams):
             )
         return margin
 
+    def upright_positions(self) -> tuple[float, float]:
+        """Where the two uprights stand along the base, in mm.
+
+        Measured to the centre of each upright's thickness, from the front
+        edge of the base.  The base's mortises and the assembly drawing both
+        read this, so a change to the channel cannot move one without the
+        other.
+
+        Returns:
+            ``(lip_x, back_x)``.
+        """
+        half = self.mortise_width() / 2.0
+        lip_x = self.feature_margin() + half
+        return lip_x, lip_x + self.thickness + self.device_gap
+
     def mortise_width(self) -> float:
         """Drawn width of a mortise across the upright's thickness, in mm."""
         return self.machine().slot_width(self.thickness)
@@ -282,8 +298,7 @@ def _base_part(params: StandParams) -> Part:
     thickness = params.thickness
     edge = params.feature_margin()
     half = params.mortise_width() / 2.0
-    lip_x = edge + half
-    back_x = lip_x + thickness + params.device_gap
+    lip_x, back_x = params.upright_positions()
     if back_x + half + edge > depth:
         raise ValueError(
             f"a {depth:g} mm base cannot hold a {params.device_gap:g} mm channel "
@@ -326,6 +341,31 @@ def _lip_part(params: StandParams) -> Part:
         ring = geo.ensure_ccw(geo.dedupe(list(merged.exterior.coords)))
         ring = _relieve_profile(ring, params)
     return Part(name="lip", outline=ring)
+
+
+def _assembly(params: StandParams) -> Assembly:
+    """Where the three parts stand in the finished dock.
+
+    The base lies down and the two uprights stand across it, their tabs
+    passing through and finishing flush with its underside - which is why both
+    uprights start at z = 0 rather than on top of the base.
+
+    Args:
+        params: Stand parameters.
+
+    Returns:
+        The assembly.
+    """
+    lip_x, back_x = params.upright_positions()
+    half = params.thickness / 2.0
+    return Assembly(
+        (
+            Placement("base", Plane.FLAT, (0.0, 0.0, 0.0)),
+            Placement("back", Plane.SIDE, (back_x - half, 0.0, 0.0)),
+            Placement("lip", Plane.SIDE, (lip_x - half, 0.0, 0.0)),
+        ),
+        f"{params.size.value} dock, {params.device_gap:g} mm channel",
+    )
 
 
 class StandGenerator(Generator):
@@ -384,6 +424,7 @@ class StandGenerator(Generator):
             params=params.model_dump(mode="json"),
             notes=self._notes(params),
             limits=params.validation_config(),
+            assembly=_assembly(params),
         )
         design.cutting_order = cutting_order_for(design)
         return design

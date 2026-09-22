@@ -22,7 +22,13 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from .bundles.builder import DEFAULT_SELLER, Bundle, build_all, write_design
+from .bundles.builder import (
+    ALL_FORMATS,
+    DEFAULT_SELLER,
+    Bundle,
+    build_all,
+    write_design,
+)
 from .core.design import Machine, Mode
 from .core.export_pdf import PAPER_SIZES, A4, PaperSize
 from .core.validate import Report, Severity, ValidationError as GeometryInvalid
@@ -31,7 +37,7 @@ from .niches import all_generators, get_generator, niche_names
 
 __all__ = ["app", "main"]
 
-ALL_FORMATS = ("dxf", "svg", "pdf", "preview", "mockup", "readme")
+
 
 #: Etsy, Gumroad and most other download marketplaces cap a single file at
 #: 20 MB.  A bundle over that is not an error, but it cannot be uploaded as

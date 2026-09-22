@@ -58,6 +58,23 @@ A 3.200 mm mortise is drawn at **3.050** so the beam opens it back to 3.200; a
 24.000 mm tab is drawn at **24.150** so the beam narrows it back to 24.000. The
 3 mm material then enters a 3.200 mm slot: exactly the 0.200 mm asked for.
 
+**A design that assembles knows how.** A nest of six flat rectangles is what
+the machine needs and the worst possible picture of a bookcase. Boxes, docks
+and furniture record where each panel sits in the finished object, and that is
+drawn in isometric projection — for the per-design image and for the contact
+sheet tile, so a bundle of shelf units shows shelf units rather than cut
+sheets. It is 2D line work: panels sorted back to front by centroid and
+painted, which is exact for the orthogonal, non-interpenetrating assemblies
+this supports. Flat products carry no assembly, because for them the cut file
+already is the picture.
+
+Putting the drawing and the joinery on the same numbers is what makes it worth
+having. The upright's mortise heights and the drawn shelf heights come from
+one function, so a shelf cannot be drawn where its mortise was not cut — and
+the first contact sheet drawn this way immediately showed a 1560 mm bookcase
+with two shelves 1400 mm apart, a flaw that had been invisible for as long as
+the output was a nest of panels.
+
 **Files say what machine they are for.** A DXF has nowhere standard to record
 this, so `dxfgen validate` on a laser file would otherwise apply router rules
 and flag every finger joint. dxfgen writes the mode, cutter, kerf and thickness
@@ -105,6 +122,7 @@ One design, into `output/<niche>/<slug>/`:
 | `<slug>_template.pdf` | 1:1 print template, tiled with alignment crosses if it does not fit one sheet |
 | `<slug>_preview.png` | what the file contains, layer by layer |
 | `<slug>_mockup.png` | what it looks like cut, wood-grained, for a listing |
+| `<slug>_assembly.png` | what it looks like put together — boxes, docks and furniture only |
 | `README.txt` | material, depths per layer, cutting order, licence summary |
 
 ```bash
@@ -243,7 +261,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 917 tests
+python -m pytest          # 987 tests
 ```
 
 ```
@@ -269,7 +287,11 @@ Stated plainly, because finding these out at the machine is expensive.
 
 - **Mockups are flat top views** with a procedural wood texture and a drawn
   shadow. They are not 3D renders, and a recess reads as a tint rather than as
-  depth.
+  depth. The assembly drawing is a separate, flat-shaded isometric: no
+  perspective, no shadows, no hidden-surface solver.
+- **Assemblies must be orthogonal.** Panels lie in one of three planes at
+  right angles. Anything mitred, hinged or curved cannot be described, and a
+  generator that cannot describe itself simply carries no assembly.
 - **Sheet nesting leaves real waste.** Measured over 12 furniture designs, part
   area against the area the packer actually occupied: median 73%, range 36–85%.
   A shelf packer leaves the gaps a shelf packer leaves, and the worst cases are
@@ -285,6 +307,9 @@ Stated plainly, because finding these out at the machine is expensive.
 - **PDF templates are verified geometrically**, by figure dimensions and
   MediaBox, not by rasterising the output. No PDF rasteriser was available in
   the build environment.
+- **Cigar trays are one layout** in every variant: glass recess left, cigar
+  rests right. That is close to what a cigar tray is, and inventing variety
+  there is a design job rather than a fix.
 - **A large seasonal snowflake is router-cuttable, a small one is not.** Below
   roughly 160 mm the arms are finer than a 6.35 mm cutter and the design is
   refused with advice rather than quietly rounded off.

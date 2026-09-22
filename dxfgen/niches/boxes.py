@@ -28,6 +28,7 @@ from enum import Enum
 from pydantic import Field, model_validator
 
 from ..core import geometry as geo
+from ..core.assembly import Assembly, Placement, Plane
 from ..core.design import Design, Label, Mode, Part
 from ..core.geometry import Point, Ring
 from .base import (
@@ -327,6 +328,46 @@ def _lid_parts(params: BoxParams) -> list[Part]:
     ]
 
 
+def _assembly(params: BoxParams) -> Assembly:
+    """Where every panel sits in the finished box.
+
+    The walls each span the full outside dimension and overlap at the corners,
+    which is not a clash: the fingers alternate up the height, so at any one
+    height only one wall has material there.  That is the joint working, and
+    it is why the placements below can all start at zero.
+
+    Args:
+        params: Box parameters.
+
+    Returns:
+        The assembly.
+    """
+    thickness = params.thickness
+    width, depth, height = params.width, params.depth, params.height
+    floor_z = params.resolved_floor_offset()
+    placements = [
+        Placement("floor", Plane.FLAT, (thickness, thickness, floor_z)),
+        Placement("front", Plane.FRONT, (0.0, 0.0, 0.0)),
+        Placement("back", Plane.FRONT, (0.0, depth - thickness, 0.0)),
+        Placement("left", Plane.SIDE, (0.0, 0.0, 0.0)),
+        Placement("right", Plane.SIDE, (width - thickness, 0.0, 0.0)),
+    ]
+    if params.lid is not LidStyle.NONE:
+        clearance = params.lid_clearance
+        placements += [
+            Placement(
+                "lid-locator",
+                Plane.FLAT,
+                (thickness + clearance, thickness + clearance, height - thickness),
+            ),
+            Placement("lid-top", Plane.FLAT, (0.0, 0.0, height)),
+        ]
+    caption = f"{width:g} x {depth:g} x {height:g} mm box"
+    if params.lid is not LidStyle.NONE:
+        caption += " with its lid on"
+    return Assembly(tuple(placements), caption)
+
+
 class BoxGenerator(Generator):
     """Generates finger-jointed laser boxes."""
 
@@ -410,6 +451,7 @@ class BoxGenerator(Generator):
                 f"the smallest sheet of the layouts tried.",
             ],
             limits=params.validation_config(),
+            assembly=_assembly(params),
         )
         design.cutting_order = cutting_order_for(design)
         return design
