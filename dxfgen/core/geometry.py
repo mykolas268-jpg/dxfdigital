@@ -623,9 +623,16 @@ def rings_of(geom: BaseGeometry) -> list[Ring]:
     else:
         return out
     for poly in polys:
-        out.append(ensure_ccw(dedupe(list(poly.exterior.coords))))
+        # A buffer can pinch off slivers that dedupe down to one or two
+        # points - a heart's cleft does it reliably.  Those are not rings, and
+        # letting them through produces degenerate contours downstream.
+        exterior = ensure_ccw(dedupe(list(poly.exterior.coords)))
+        if len(exterior) >= 3:
+            out.append(exterior)
         for interior in poly.interiors:
-            out.append(ensure_cw(dedupe(list(interior.coords))))
+            hole = ensure_cw(dedupe(list(interior.coords)))
+            if len(hole) >= 3:
+                out.append(hole)
     return out
 
 

@@ -8,6 +8,8 @@ from .boards import BoardGenerator
 from .boxes import BoxGenerator
 from .coasters import CoasterGenerator
 from .furniture import FurnitureGenerator
+from .ornaments import OrnamentGenerator
+from .seasonal import SeasonalGenerator
 from .stands import StandGenerator
 from .trays import TrayGenerator
 
@@ -82,6 +84,8 @@ for _generator in (
     StandGenerator(),
     BoxGenerator(),
     FurnitureGenerator(),
+    SeasonalGenerator(),
+    OrnamentGenerator(),
 ):
     register(_generator)
 del _generator
