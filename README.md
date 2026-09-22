@@ -75,6 +75,15 @@ the first contact sheet drawn this way immediately showed a 1560 mm bookcase
 with two shelves 1400 mm apart, a flaw that had been invisible for as long as
 the output was a nest of panels.
 
+**A wedged tenon needs somewhere to pull from.** A flat-pack shelf held by
+friction alone racks and works loose. Its tenons can instead stand proud of
+the upright and take a tapered wedge, which is the classic knock-down joint
+and tightens every time it is tapped. The mechanism is one number: the wedge
+slot reaches back *inside* the upright's outer face by the bite, so the
+wedge's straight side can bear on the upright while its taper pushes the far
+end of the slot outwards, pulling the shoulder tight. A slot flush with the
+upright looks identical and does nothing.
+
 **A recess has to follow the outline it is set into.** A tray is its shape
 moved inwards, and on an outline with small lobes — a paw's toes — offsetting
 eats them and rounding blobs what is left, so the result reads as a puddle
@@ -113,7 +122,7 @@ guess.
 | `ashtrays` | Cigar and whiskey trays with a glass recess, cigar rests and an ash well | router |
 | `stands` | Three-part slot-together phone and tablet docks in four back profiles, no glue | router |
 | `boxes` | Finger-jointed boxes, plain or with cross-lapped compartments, tabbed floor, optional lid | laser |
-| `furniture` | Flat-pack slot-together shelves and tables, nested onto sheet stock | router |
+| `furniture` | Flat-pack shelves with wedged or friction through-tenons, and cross-leg tables, nested onto sheet stock | router |
 | `seasonal` | Themed plaques, shaped trays and coaster sets from parametric curves | either |
 | `ornaments` | Ornaments and keychains from parametric shapes, nested as a set | laser |
 
@@ -284,7 +293,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1055 tests
+python -m pytest          # 1067 tests
 ```
 
 ```
@@ -321,8 +330,9 @@ Stated plainly, because finding these out at the machine is expensive.
   area against the area the packer actually occupied: median 73%, range 36–85%.
   A shelf packer leaves the gaps a shelf packer leaves, and the worst cases are
   designs whose parts differ most in height.
-- **Furniture joints are friction fits.** There is no wedge, cam or captive-nut
-  geometry, so a bookcase relies on the fit and, ideally, glue.
+- **Only shelf units can be wedged.** A cross-lapped table is held by its own
+  geometry, so there is nothing for a wedge to pull tight, and there is no cam
+  or captive-nut hardware anywhere.
 - **Boxes have no hinges or drawers.** A plain or compartmented open box with
   an optional lift-off lid is the whole range.
 - **The pumpkin's lobes are engraved** rather than cut into the silhouette.

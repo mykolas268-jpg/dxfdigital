@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import random
 from enum import Enum
+from typing import Sequence
 
 from pydantic import Field, model_validator
 
@@ -51,6 +52,9 @@ SHEET_GAP = 60.0
 #: this the shelves are closer together than anything you would stand on one.
 MAX_SHELVES: int = 6
 
+#: Material left beyond a wedge slot so the tenon does not split out.
+END_GRAIN_MARGIN: float = 10.0
+
 
 class FurnitureForm(str, Enum):
     """Which piece to build."""
@@ -75,6 +79,16 @@ class FurnitureParams(GeneratorParams):
     depth: float = Field(320.0, ge=150.0, le=800.0, description="overall depth in mm")
     height: float = Field(900.0, ge=180.0, le=2000.0, description="overall height in mm")
     shelves: int = Field(3, ge=1, le=8, description="shelf count, for the shelf form")
+    wedges: bool = Field(
+        False, description="wedge the shelf tenons instead of relying on friction"
+    )
+    wedge_slot: float = Field(
+        16.0, ge=8.0, le=40.0, description="wedge slot length along the tenon, mm"
+    )
+    wedge_bite: float = Field(
+        1.5, ge=0.5, le=6.0,
+        description="how far the slot reaches back inside the upright, mm",
+    )
     tabs: int = Field(2, ge=1, le=5, description="tabs per joint")
     tab_width: float = Field(60.0, ge=25.0, le=200.0, description="tab width in mm")
     foot_arch: float = Field(
@@ -192,6 +206,66 @@ def _mortise(params: FurnitureParams, x0: float, y0: float, length: float) -> Ri
     return geo.apply_relief(ring, params.tool_diameter / 2.0, style="dogbone")
 
 
+def tenon_reach(params: FurnitureParams) -> float:
+    """How far a shelf's tenon protrudes past the upright, in mm.
+
+    A friction tenon stops flush with the outside of the upright.  A wedged
+    one has to carry its slot plus enough material beyond it not to split, so
+    it stands proud - which is what a wedged joint looks like, and is meant to.
+
+    Args:
+        params: Furniture parameters.
+
+    Returns:
+        The protrusion measured from the upright's inner face.
+    """
+    if not params.wedges:
+        return params.thickness
+    return params.thickness - params.wedge_bite + params.wedge_slot + END_GRAIN_MARGIN
+
+
+def _wedge_slots(
+    params: FurnitureParams, length: float, spans: list[tuple[float, float]]
+) -> list[Ring]:
+    """The slot in each tenon that its wedge is driven through.
+
+    The slot starts ``wedge_bite`` *inside* the upright's outer face.  That is
+    the whole mechanism: the wedge's straight side bears on the upright, its
+    tapered side on the far end of the slot, so driving it pushes the slot
+    outwards and pulls the shelf's shoulder tight.  A slot starting flush with
+    the upright has nothing left to pull with.
+
+    Args:
+        params: Furniture parameters.
+        length: Panel length between the tab shoulders, in mm.
+        spans: Tab positions along the panel's height.
+
+    Returns:
+        Closed rings, in panel coordinates, for both edges.
+    """
+    if not params.wedges:
+        return []
+    thickness = params.thickness
+    opening = thickness + params.clearance
+    near = thickness - params.wedge_bite
+    rings: list[Ring] = []
+    for start, end in spans:
+        middle = (start + end) / 2.0
+        for sign, base in ((1.0, length), (-1.0, 0.0)):
+            x0 = base + near * sign if sign > 0 else base - (near + params.wedge_slot)
+            rings.append(
+                geo.rect_ring(params.wedge_slot, opening, x0, middle - opening / 2.0)
+            )
+    # A hole is relieved the other way round from a profile: the cutter works
+    # inside it, so its corners get dogbones, exactly as a mortise does.
+    if params.machine().is_laser or not params.relief:
+        return rings
+    return [
+        geo.apply_relief(ring, params.tool_diameter / 2.0, style="dogbone")
+        for ring in rings
+    ]
+
+
 def _tabbed_edge(
     params: FurnitureParams, length: float, height: float, spans: list[tuple[float, float]]
 ) -> Ring:
@@ -206,21 +280,21 @@ def _tabbed_edge(
     Returns:
         A counter-clockwise ring.
     """
-    thickness = params.thickness
+    reach = tenon_reach(params)
     ring: list[Point] = [(0.0, 0.0), (length, 0.0)]
     for start, end in spans:
         ring.extend(
             [
                 (length, start),
-                (length + thickness, start),
-                (length + thickness, end),
+                (length + reach, start),
+                (length + reach, end),
                 (length, end),
             ]
         )
     ring.append((length, height))
     ring.append((0.0, height))
     for start, end in reversed(spans):
-        ring.extend([(0.0, end), (-thickness, end), (-thickness, start), (0.0, start)])
+        ring.extend([(0.0, end), (-reach, end), (-reach, start), (0.0, start)])
     return _relieve(params, geo.dedupe(ring))
 
 
@@ -349,6 +423,51 @@ def shelf_levels(params: FurnitureParams) -> list[float]:
     return [lowest + index * step for index in range(params.shelves)]
 
 
+def _wedge_part(params: FurnitureParams, quantity: int) -> Part:
+    """The tapered key driven through a tenon's slot.
+
+    Cut from the same sheet, so its thickness is the material's and the slot
+    it passes through is one material thickness plus the fit clearance wide.
+    It tapers along its length, so tapping it further always tightens the
+    joint; a parallel key would only ever be as tight as it was cut.
+
+    Args:
+        params: Furniture parameters.
+        quantity: How many to cut.
+
+    Returns:
+        The part.
+
+    Raises:
+        ValueError: If the taper leaves no tip.
+    """
+    slot = params.wedge_slot
+    # Wide enough at the head to still be driving after the joint has taken
+    # up, narrow enough at the tip to start by hand.
+    head, tip = slot * 0.92, slot * 0.42
+    length = max(52.0, params.thickness * 3.4)
+    if tip < 4.0:
+        raise ValueError(
+            f"a {slot:g} mm wedge slot tapers to a {tip:.1f} mm tip, too fine "
+            f"to cut or to tap"
+        )
+    collar = slot * 1.35
+    shoulder = length * 0.16
+    ring: Ring = [
+        (0.0, 0.0),
+        (tip, 0.0),
+        (head, length - shoulder),
+        (collar, length - shoulder),
+        (collar, length),
+        (0.0, length),
+    ]
+    return Part(
+        name="wedge",
+        outline=_relieve(params, geo.dedupe(ring)),
+        quantity=quantity,
+    )
+
+
 def _shelf_unit(params: FurnitureParams) -> list[Part]:
     """Two uprights and a stack of shelves."""
     thickness = params.thickness
@@ -374,14 +493,21 @@ def _shelf_unit(params: FurnitureParams) -> list[Part]:
         upright = geo.round_convex(upright, params.corner_radius)
     upright = _relieve(params, _arched(params, upright, params.depth))
 
+    shelf = Part(
+        name="shelf",
+        outline=_tabbed_edge(params, inner_width, params.depth, spans),
+        holes=_wedge_slots(params, inner_width, spans),
+        quantity=params.shelves,
+    )
     parts = [
         Part(name="upright", outline=list(upright), holes=list(holes), quantity=2),
-        Part(
-            name="shelf",
-            outline=_tabbed_edge(params, inner_width, params.depth, spans),
-            quantity=params.shelves,
-        ),
+        shelf,
     ]
+    if params.wedges:
+        # One per tenon: every shelf, both ends, every tab.
+        parts.append(
+            _wedge_part(params, params.shelves * 2 * params.tabs)
+        )
     return parts
 
 
@@ -462,6 +588,53 @@ def _cross_table(params: FurnitureParams) -> list[Part]:
     ]
 
 
+def _wedge_placements(
+    params: FurnitureParams, levels: Sequence[float]
+) -> list[Placement]:
+    """Where each wedge stands, driven through its tenon outside the upright.
+
+    A wedge stands on edge in the plane of the shelf's length, so its face is
+    the one you tap.  It is drawn at the slot it passes through, one per
+    tenon.
+
+    Args:
+        params: Furniture parameters.
+        levels: Shelf heights.
+
+    Returns:
+        One placement per wedge, named to match the parts nesting produced.
+    """
+    thickness = params.thickness
+    reach = tenon_reach(params)
+    spans = _tab_spans(params, params.depth)
+    # A wedge's own zero is its tip, and it is driven downwards, so it starts
+    # below the shelf by about a third of its length.
+    drop = max(52.0, thickness * 3.4)
+    number = 0
+    placements: list[Placement] = []
+    for level in levels:
+        for side, base in ((1.0, width_of(params) - thickness), (-1.0, thickness)):
+            for start, end in spans:
+                number += 1
+                x = base + (reach - params.wedge_slot - END_GRAIN_MARGIN) * side
+                if side < 0:
+                    x = base - reach + END_GRAIN_MARGIN
+                placements.append(
+                    Placement(
+                        f"wedge-{number}",
+                        Plane.FRONT,
+                        (x, (start + end) / 2.0 - thickness / 2.0,
+                         level + thickness - drop * 0.55),
+                    )
+                )
+    return placements
+
+
+def width_of(params: FurnitureParams) -> float:
+    """The piece's overall width in mm, for readability at the call site."""
+    return params.width
+
+
 def _assembly(params: FurnitureParams) -> Assembly:
     """Where every panel stands in the finished piece.
 
@@ -486,11 +659,14 @@ def _assembly(params: FurnitureParams) -> Assembly:
             Placement("upright-1", Plane.SIDE, (0.0, 0.0, 0.0)),
             Placement("upright-2", Plane.SIDE, (width - thickness, 0.0, 0.0)),
         ]
+        levels = shelf_levels(params)
+        if params.wedges:
+            placements += _wedge_placements(params, levels)
         # A shelf's tabs reach out past its body into the uprights' mortises,
         # so its own origin sits one thickness in and the tabs land on zero.
         placements += [
             Placement(f"shelf-{index + 1}", Plane.FLAT, (thickness, 0.0, level))
-            for index, level in enumerate(shelf_levels(params))
+            for index, level in enumerate(levels)
         ]
         caption = (
             f"{width:g} x {depth:g} x {height:g} mm shelf unit, "
@@ -572,6 +748,7 @@ class FurnitureGenerator(Generator):
                 "furniture", params.form.value,
                 f"{params.width:g}x{params.depth:g}x{params.height:g}",
                 f"t{params.thickness:g}",
+                "wedged" if params.wedges else "friction",
             ),
             name=self._name(params),
             niche=self.niche,
@@ -625,7 +802,23 @@ class FurnitureGenerator(Generator):
 
     def _notes(self, params: FurnitureParams, sheets: int, parts: int) -> list[str]:
         length, width = params.mortise_size()
-        notes = [
+        if params.wedges:
+            over = tenon_reach(params) - params.thickness
+            notes = [
+                f"Wedged through-tenons. The {params.width:g} mm width is the "
+                f"carcass; the tenons stand {over:.0f} mm proud of each upright, "
+                f"so the piece measures {params.width + 2 * over:.0f} mm across "
+                f"the wedges.",
+                "Drive each wedge with a mallet until the shelf shoulder pulls "
+                "tight against the upright. Tap them again after a week; that "
+                "is the point of a wedge and the reason there is no glue here.",
+                "Wedges are cut from the same sheet, so their thickness is the "
+                "material's. Cut a spare or two; they are the part that gets "
+                "lost.",
+            ]
+        else:
+            notes = []
+        notes += [
             f"{parts} parts nested onto {sheets} sheet"
             f"{'s' if sheets != 1 else ''} of {SHEET[0]:g} x {SHEET[1]:g} mm.",
             f"Mortises are drawn {length:.2f} x {width:.2f} mm for "
@@ -690,6 +883,10 @@ class FurnitureGenerator(Generator):
             shelves=shelves,
             tabs=tabs,
             tab_width=tab_width,
+            # Wedges are shelf work: a cross-lapped table is held by its own
+            # geometry, so there is nothing for a wedge to pull tight.
+            wedges=form is FurnitureForm.SHELF and rng.random() < 0.45,
+            wedge_slot=float(rng.randrange(14, 24, 2)),
             foot_arch=foot_arch,
             foot_inset=foot_inset,
             corner_radius=float(rng.randrange(0, 20, 4)),

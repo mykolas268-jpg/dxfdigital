@@ -14,6 +14,7 @@ from dxfgen.niches.furniture import (
     FurnitureGenerator,
     FurnitureParams,
     _tab_spans,
+    tenon_reach,
 )
 
 
@@ -239,3 +240,116 @@ def test_a_design_needing_two_sheets_says_so(gen: FurnitureGenerator) -> None:
     design = gen.make(width=760, depth=320, height=1200, shelves=4)
     assert "2 sheets" in design.description
     assert any("side by side" in note for note in design.notes)
+
+
+# --------------------------------------------------------------------------- #
+# wedged through-tenons
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def wedged(gen: FurnitureGenerator):
+    return gen.make(
+        form="shelf", width=760, depth=320, height=1000, shelves=3, wedges=True
+    )
+
+
+def test_a_friction_tenon_finishes_flush(gen: FurnitureGenerator) -> None:
+    params = gen.parse({"form": "shelf"})
+    assert tenon_reach(params) == params.thickness
+
+
+def test_a_wedged_tenon_stands_proud(gen: FurnitureGenerator) -> None:
+    """It has to carry its slot plus material beyond it, so it protrudes."""
+    params = gen.parse({"form": "shelf", "wedges": True})
+    assert tenon_reach(params) > params.thickness + params.wedge_slot
+
+
+def test_a_wedged_shelf_carries_a_slot_per_tenon(
+    gen: FurnitureGenerator, wedged
+) -> None:
+    params = gen.parse(wedged.params)
+    shelf = next(p for p in wedged.parts if p.name.startswith("shelf"))
+    assert len(shelf.holes) == 2 * params.tabs, "both ends, every tab"
+
+
+def test_an_unwedged_shelf_has_no_slots(gen: FurnitureGenerator) -> None:
+    design = gen.make(form="shelf", width=760, depth=320, height=1000, shelves=3)
+    shelf = next(p for p in design.parts if p.name.startswith("shelf"))
+    assert shelf.holes == []
+
+
+def test_the_slot_straddles_the_upright_face(gen: FurnitureGenerator, wedged) -> None:
+    """The whole mechanism: a slot flush with the upright has no pull in it.
+
+    The slot must reach back inside the upright's outer face by the bite, so
+    driving the wedge can still move the tenon outwards.
+    """
+    params = gen.parse(wedged.params)
+    shelf = next(p for p in wedged.parts if p.name.startswith("shelf"))
+    reach = tenon_reach(params)
+    # In shelf coordinates the right-hand upright's outer face sits one
+    # thickness out from the shoulder.
+    inner_width = params.width - 2 * params.thickness
+    face = inner_width + params.thickness
+    right = [h for h in shelf.holes if geo.centroid(h)[0] > inner_width / 2]
+    assert right
+    for hole in right:
+        x0, _, x1, _ = geo.bbox(hole)
+        assert x0 < face, "the slot must start inside the upright's outer face"
+        # The bounding box includes the dogbone relief, which overshoots the
+        # corner on purpose, so the bite is a floor rather than an equality.
+        bite = face - x0
+        assert params.wedge_bite - 0.05 <= bite <= (
+            params.wedge_bite + params.relief_margin() + 0.05
+        ), f"slot reaches {bite:.2f} mm inside the face"
+        assert x1 < inner_width + reach, "and finish inside the tenon"
+
+
+def test_a_wedge_is_cut_for_every_tenon(gen: FurnitureGenerator, wedged) -> None:
+    params = gen.parse(wedged.params)
+    wedges = [p for p in wedged.parts if p.name.startswith("wedge")]
+    assert len(wedges) == params.shelves * 2 * params.tabs
+
+
+def test_a_wedge_tapers(gen: FurnitureGenerator, wedged) -> None:
+    """A parallel key is only ever as tight as it was cut."""
+    wedge = next(p for p in wedged.parts if p.name.startswith("wedge"))
+    points = sorted(wedge.outline, key=lambda p: p[1])
+    low = max(x for x, y in points if y < 2.0)
+    high = max(x for x, y in points if y > geo.bbox(wedge.outline)[3] * 0.6)
+    assert high > low, "the wedge must be wider where it is driven from"
+
+
+def test_a_wedge_fits_its_slot(gen: FurnitureGenerator, wedged) -> None:
+    params = gen.parse(wedged.params)
+    wedge = next(p for p in wedged.parts if p.name.startswith("wedge"))
+    shelf = next(p for p in wedged.parts if p.name.startswith("shelf"))
+    slot_length = geo.bbox(shelf.holes[0])[2] - geo.bbox(shelf.holes[0])[0]
+    widest = geo.bbox(wedge.outline)[2] - geo.bbox(wedge.outline)[0]
+    assert widest > slot_length, "the collar must not pass through"
+    driven = max(x for x, y in wedge.outline if y < geo.bbox(wedge.outline)[3] * 0.8)
+    assert driven <= slot_length + 0.6, "but the working length must"
+
+
+def test_a_wedged_unit_validates(gen: FurnitureGenerator, wedged) -> None:
+    report = gen.check(wedged)
+    assert report.ok, report.format()
+
+
+def test_the_readme_says_the_tenons_stand_proud(wedged) -> None:
+    joined = " ".join(wedged.notes)
+    assert "carcass" in joined and "proud" in joined
+    assert "Tap them again" in joined
+
+
+def test_wedging_is_in_the_slug(gen: FurnitureGenerator, wedged) -> None:
+    assert "wedged" in wedged.slug
+    plain = gen.make(form="shelf", width=760, depth=320, height=1000, shelves=3)
+    assert "friction" in plain.slug
+
+
+def test_a_table_is_never_wedged(gen: FurnitureGenerator) -> None:
+    """Cross-lapped legs are held by their own geometry; nothing to pull."""
+    for seed in (1, 7, 31):
+        for design in gen.variants(10, seed=seed):
+            if design.params["form"] == "table":
+                assert design.params["wedges"] is False
