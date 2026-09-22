@@ -249,7 +249,12 @@ class OrnamentGenerator(Generator):
             pool = [n for n in pool if n != "snowflake"] or ["star"]
         count = min(len(pool), rng.choice([2, 3, 3, 4]))
         return OrnamentParams(
-            shapes=rng.sample(pool, count),
+            # Sorted, because rng.sample returns an ordered sample and the
+            # same three shapes drawn in a different order made a different
+            # slug, slipped past the duplicate check, and shipped the same
+            # set of keychains twice in one bundle.  The nester decides the
+            # layout anyway, so the draw order carries no information.
+            shapes=sorted(rng.sample(pool, count)),
             width=width,
             copies=rng.choice([1, 1, 2, 3]),
             use=use,
