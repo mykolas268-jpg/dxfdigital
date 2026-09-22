@@ -6,7 +6,13 @@ import pytest
 from shapely.geometry import Polygon
 
 from dxfgen.core import geometry as geo
-from dxfgen.niches.boards import BoardGenerator, BoardParams, BoardStyle, HangHole
+from dxfgen.niches.boards import (
+    BoardGenerator,
+    BoardParams,
+    BoardStyle,
+    Handle,
+    HangHole,
+)
 
 
 @pytest.fixture(scope="module")
@@ -124,3 +130,105 @@ def test_the_name_reflects_what_the_board_is(gen: BoardGenerator) -> None:
     assert "Charcuterie" in gen.make(juice_groove=False).name
     assert "Paddle" in gen.make(style=BoardStyle.PADDLE).name
     assert "Cheese" in gen.make(style=BoardStyle.ROUND, juice_groove=False).name
+
+
+# --------------------------------------------------------------------------- #
+# hand holds
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def handled(gen: BoardGenerator):
+    return gen.make(style=BoardStyle.ROUNDED, length=520, width=340, handle=Handle.ENDS)
+
+
+def test_a_handled_board_gets_two_cutouts(handled) -> None:
+    assert len(handled.parts[0].holes) == 2
+
+
+def test_a_hand_hold_is_big_enough_for_a_hand(handled) -> None:
+    """Under 90 x 30 mm it is decoration, not something you lift a board by."""
+    for slot in handled.parts[0].holes:
+        long_side, short_side = sorted(geo.size_of(slot), reverse=True)
+        assert long_side >= 90.0, f"{long_side:.1f} mm long"
+        assert short_side >= 30.0, f"{short_side:.1f} mm wide"
+
+
+def test_the_hand_holds_sit_one_at_each_end(handled) -> None:
+    board_x0, _, board_x1, _ = geo.bbox(handled.parts[0].outline)
+    middle = (board_x0 + board_x1) / 2.0
+    centres = sorted(geo.centroid(slot)[0] for slot in handled.parts[0].holes)
+    assert centres[0] < middle < centres[1]
+
+
+def test_the_hand_holds_are_inside_the_board(handled) -> None:
+    body = Polygon(handled.parts[0].outline)
+    for slot in handled.parts[0].holes:
+        assert body.contains(Polygon(slot))
+
+
+def test_a_hand_hold_keeps_its_wall_to_the_edge(handled) -> None:
+    body = Polygon(handled.parts[0].outline)
+    params = BoardParams(style=BoardStyle.ROUNDED, length=520, width=340, handle=Handle.ENDS)
+    for slot in handled.parts[0].holes:
+        gap = body.exterior.distance(Polygon(slot))
+        assert gap >= params.min_wall - 0.05, f"{gap:.2f} mm to the edge"
+
+
+@pytest.mark.parametrize(
+    "style", [BoardStyle.ROUNDED, BoardStyle.SOFT, BoardStyle.ROUND]
+)
+def test_hand_holds_follow_any_profile(gen: BoardGenerator, style: BoardStyle) -> None:
+    """The slot is swept along an inset centreline, so a circle works too."""
+    width = 420 if style is BoardStyle.ROUND else 340
+    design = gen.make(style=style, length=420, width=width, handle=Handle.ENDS)
+    assert len(design.parts[0].holes) == 2
+
+
+def test_the_groove_moves_aside_for_a_hand_hold() -> None:
+    """A groove draining into a hand hold is not a groove."""
+    plain = BoardParams(length=520, width=340, groove_inset=22.0)
+    handled = BoardParams(length=520, width=340, groove_inset=22.0, handle=Handle.ENDS)
+    assert plain.resolved_groove_inset() == 22.0
+    assert handled.resolved_groove_inset() == handled.handle_width + 2 * handled.min_wall
+    assert handled.resolved_groove_inset() > plain.resolved_groove_inset()
+
+
+def test_a_wide_groove_is_left_alone(gen: BoardGenerator) -> None:
+    params = BoardParams(length=520, width=340, groove_inset=80.0, handle=Handle.ENDS)
+    assert params.resolved_groove_inset() == 80.0
+
+
+def test_a_hand_hold_never_breaks_into_the_groove(gen: BoardGenerator) -> None:
+    design = gen.make(
+        style=BoardStyle.ROUNDED, length=560, width=380,
+        handle=Handle.ENDS, juice_groove=True,
+    )
+    part = design.parts[0]
+    groove = part.pockets[0].region()
+    for slot in part.holes:
+        assert groove.distance(Polygon(slot)) >= design.limits.min_wall - 0.05
+
+
+def test_a_board_too_small_for_a_hand_is_refused(gen: BoardGenerator) -> None:
+    with pytest.raises(ValueError):
+        gen.make(style=BoardStyle.ROUNDED, length=200, width=120, handle=Handle.ENDS)
+
+
+def test_a_round_cheese_board_can_take_a_juice_groove(gen: BoardGenerator) -> None:
+    """An inward offset of a circle is a circle; there was never a reason not to."""
+    design = gen.make(style=BoardStyle.ROUND, length=380, juice_groove=True)
+    assert len(design.parts[0].pockets) == 1
+
+
+def test_no_sampled_board_is_featureless(gen: BoardGenerator) -> None:
+    """A bare rounded rectangle is not a design anybody pays for."""
+    for seed in (1, 11, 42, 2026):
+        for design in gen.variants(12, seed=seed):
+            p = design.params
+            features = [
+                p["juice_groove"],
+                p["hang_hole"] != HangHole.NONE.value,
+                p["engrave_border"],
+                p["handle"] != Handle.NONE.value,
+                p["style"] == BoardStyle.PADDLE.value,
+            ]
+            assert any(features), f"{design.slug} has nothing on it"

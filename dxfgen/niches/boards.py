@@ -29,7 +29,8 @@ from ..core.geometry import Ring
 from ..core.layers import ENGRAVE
 from .base import GOLDEN, Generator, GeneratorParams, cutting_order_for, slugify, smallest_stock
 
-__all__ = ["BoardStyle", "HangHole", "BoardParams", "BoardGenerator"]
+__all__ = [
+    "Handle","BoardStyle", "HangHole", "BoardParams", "BoardGenerator"]
 
 
 class BoardStyle(str, Enum):
@@ -43,6 +44,14 @@ class BoardStyle(str, Enum):
     """Rounded rectangle with a handle tongue at one end."""
     ROUND = "round"
     """Circular, for a cheese board."""
+
+
+class Handle(str, Enum):
+    """Hand holds cut through the board."""
+
+    NONE = "none"
+    ENDS = "ends"
+    """A slot at each short end, for lifting a loaded board with both hands."""
 
 
 class HangHole(str, Enum):
@@ -89,6 +98,13 @@ class BoardParams(GeneratorParams):
     groove_radius: float | None = Field(
         None, ge=0.0, le=200.0, description="groove corner radius in mm; default 25"
     )
+    handle: Handle = Field(Handle.NONE, description="hand hold cutouts")
+    handle_length: float = Field(
+        120.0, ge=90.0, le=320.0, description="handle cutout length in mm (>= 90 for a hand)"
+    )
+    handle_width: float = Field(
+        32.0, ge=30.0, le=60.0, description="handle cutout width in mm (>= 30 for a hand)"
+    )
     hang_hole: HangHole = Field(HangHole.NONE, description="hanging hole placement")
     hang_hole_diameter: float = Field(
         22.0, ge=8.0, le=45.0, description="hanging hole diameter in mm"
@@ -116,6 +132,23 @@ class BoardParams(GeneratorParams):
             if abs(self.width - self.length) > 1e-9:
                 raise ValueError("a round board must have width equal to length")
         return self
+
+    def resolved_groove_inset(self) -> float:
+        """How far in the juice groove really sits.
+
+        A handle needs the rim to itself: the cutout runs from ``min_wall`` to
+        ``min_wall + handle_width`` in from the edge, and the groove has to
+        clear it by another wall.  A groove that opens into a hand hold drains
+        onto the floor, so the groove yields rather than the handle - the same
+        rule the trays use, where the rim is derived from the handle instead of
+        being checked against it afterwards.
+
+        Returns:
+            The groove inset in mm, widened if handles demand it.
+        """
+        if self.handle is Handle.NONE:
+            return self.groove_inset
+        return max(self.groove_inset, self.handle_width + 2.0 * self.min_wall)
 
     def resolved_width(self) -> float:
         """Overall width in mm, rounded to the millimetre when derived."""
@@ -218,13 +251,14 @@ def _juice_groove(params: BoardParams, base: Ring) -> Pocket:
             f"{params.tool_diameter:g} mm cutter; it needs at least "
             f"{minimum:.1f} mm"
         )
-    outer_rings = geo.offset_ring(base, -params.groove_inset, join="round")
+    inset = params.resolved_groove_inset()
+    outer_rings = geo.offset_ring(base, -inset, join="round")
     inner_rings = geo.offset_ring(
-        base, -(params.groove_inset + params.groove_width), join="round"
+        base, -(inset + params.groove_width), join="round"
     )
     if len(outer_rings) != 1 or len(inner_rings) != 1:
         raise ValueError(
-            f"a groove {params.groove_inset:g} mm in does not close on this board"
+            f"a groove {inset:g} mm in does not close on this board"
         )
     # Offsetting a rounded rectangle inward by more than its corner radius
     # leaves square corners, which a round cutter cannot reach inside a 9 mm
@@ -243,6 +277,72 @@ def _juice_groove(params: BoardParams, base: Ring) -> Pocket:
             f"surface, below the {MIN_WORKING_SIDE:g} mm minimum"
         )
     return Pocket(outer, params.groove_depth, islands=[inner])
+
+
+def _handle_slots(
+    params: BoardParams, outline: Ring, groove: "Pocket | None"
+) -> list[Ring]:
+    """Cut a hand hold through each short end of the board.
+
+    The slot is swept along the curve running half a handle-width plus a wall
+    inside the profile, the same construction the trays use: sweeping a disc
+    along an inset centreline gives a slot of exactly ``handle_width`` whose
+    wall to the edge is constant, on a straight end or a round one.  That is
+    what makes a handle on a circular cheese board work at all.
+
+    Both dimensions are floors, not defaults: a cutout under 90 x 30 mm is not
+    a hand hold, it is a decoration you cannot lift a loaded board by.
+
+    Args:
+        params: Board parameters.
+        outline: The outer profile.
+        groove: The juice groove, if the board has one; a handle may not break
+            into it, because a groove that drains into a hole is not a groove.
+
+    Returns:
+        Two closed rings.
+
+    Raises:
+        ValueError: If two ergonomic handles do not fit, or one would open
+            into the juice groove.
+    """
+    inset = params.handle_width / 2.0 + params.min_wall
+    width, height = geo.size_of(outline)
+    length = min(params.handle_length, max(90.0, height * 0.55))
+    if length < 90.0:
+        raise ValueError(
+            f"a {height:g} mm deep board cannot carry a 90 mm handle cutout"
+        )
+
+    centreline = geo.offset_centreline(outline, inset)
+    perimeter = geo.perimeter(centreline)
+    if 2.0 * length + 4.0 * params.min_wall > perimeter:
+        raise ValueError(
+            f"two {length:g} mm handles do not fit a {perimeter:.0f} mm perimeter"
+        )
+
+    x0, y0, x1, y1 = geo.bbox(outline)
+    middle = (y0 + y1) / 2.0
+    slots = [
+        geo.curved_slot(centreline, anchor, length, params.handle_width)
+        for anchor in ((x0 - 20.0, middle), (x1 + 20.0, middle))
+    ]
+    first, second = (geo.polygon_from_ring(ring) for ring in slots)
+    if first.distance(second) < params.min_wall - 1e-6:
+        raise ValueError(
+            f"the two handle cutouts come within {first.distance(second):.1f} mm "
+            f"of each other"
+        )
+    if groove is not None:
+        region = groove.region()
+        for slot in slots:
+            gap = region.distance(geo.polygon_from_ring(slot))
+            if gap < params.min_wall - 1e-6:
+                raise ValueError(
+                    f"a handle cutout comes within {gap:.1f} mm of the juice "
+                    f"groove; move the groove in or drop the handles"
+                )
+    return slots
 
 
 def _hang_hole(params: BoardParams, outline: Ring, groove: Pocket | None) -> Ring:
@@ -340,12 +440,14 @@ class BoardGenerator(Generator):
             pockets.append(groove)
 
         holes: list[Ring] = []
+        if params.handle is Handle.ENDS:
+            holes.extend(_handle_slots(params, outline, groove))
         if params.hang_hole is not HangHole.NONE:
             holes.append(_hang_hole(params, outline, groove))
 
         engrave: list[Contour] = []
         if params.engrave_border:
-            limit = (params.groove_inset - params.tool_diameter) if groove else 40.0
+            limit = (params.resolved_groove_inset() - params.tool_diameter) if groove else 40.0
             inset = min(params.engrave_inset, max(limit, 0.0))
             if inset < 3.0:
                 raise ValueError(
@@ -400,7 +502,7 @@ class BoardGenerator(Generator):
     ) -> list[Label]:
         """Place the INFO label on the rim, if there is room for it."""
         width = params.resolved_width()
-        rim = params.groove_inset if groove else 18.0
+        rim = params.resolved_groove_inset() if groove else 18.0
         height = min(5.0, rim * 0.35)
         if rim < 12.0 or 0.62 * height * len(text) > params.body_length() * 0.8:
             return []
@@ -427,8 +529,13 @@ class BoardGenerator(Generator):
         if params.juice_groove:
             bits.append(
                 f"with a {params.groove_width:g} mm juice groove "
-                f"{params.groove_depth:g} mm deep set {params.groove_inset:g} mm "
+                f"{params.groove_depth:g} mm deep set {params.resolved_groove_inset():g} mm "
                 f"in from the edge"
+            )
+        if params.handle is Handle.ENDS:
+            bits.append(
+                f"with a hand hold {params.handle_length:g} x "
+                f"{params.handle_width:g} mm cut through each end"
             )
         if params.hang_hole is not HangHole.NONE:
             bits.append(
@@ -442,6 +549,17 @@ class BoardGenerator(Generator):
 
     def _notes(self, params: BoardParams) -> list[str]:
         notes = [f"Finish with food-safe oil before use."]
+        if params.handle is Handle.ENDS:
+            notes.append(
+                "The hand holds are cut right through. Sand their inside edges "
+                "well; they are the part the board is picked up by."
+            )
+            if params.juice_groove:
+                notes.append(
+                    f"The groove sits {params.resolved_groove_inset():g} mm in "
+                    f"rather than the usual rim, so it clears the hand holds "
+                    f"and cannot drain into them."
+                )
         if params.juice_groove:
             notes.append(
                 f"The groove is drawn as a flat-bottomed channel "
@@ -476,13 +594,31 @@ class BoardGenerator(Generator):
             width = round(length / aspect / 10.0) * 10.0
         tongue_length = float(rng.randrange(90, 160, 10))
         tongue_width = min(float(rng.randrange(70, 130, 10)), width - 40.0)
-        groove = rng.random() < 0.6 and style is not BoardStyle.ROUND
+        # A round cheese board takes a juice groove as happily as any other -
+        # an inward offset of a circle is a circle - and excluding it left the
+        # contact sheet showing bare discs with one hole in them.
+        groove = rng.random() < 0.6
         if style is BoardStyle.PADDLE:
             hang = rng.choice([HangHole.TONGUE, HangHole.TONGUE, HangHole.NONE])
         elif groove:
             hang = HangHole.NONE
         else:
             hang = rng.choice([HangHole.END, HangHole.NONE])
+        # Hand holds need a wide rim and a board big enough to want carrying,
+        # and the paddle already has a handle.
+        handle = Handle.NONE
+        if style is not BoardStyle.PADDLE and min(length, width) >= 280.0:
+            handle = rng.choice([Handle.ENDS, Handle.NONE, Handle.NONE])
+        border = rng.random() < 0.3
+        # A board with no groove, no handle, no hanging hole and no engraving
+        # is a rounded rectangle, and nobody buys a file of a rounded
+        # rectangle.  Give the plainest draws their one feature back.
+        if not (groove or border or handle is not Handle.NONE
+                or hang is not HangHole.NONE or style is BoardStyle.PADDLE):
+            if min(length, width) >= 280.0:
+                handle = Handle.ENDS
+            else:
+                border = True
         thickness = rng.choice([19.0, 19.0, 25.0, 20.0])
         return BoardParams(
             length=length,
@@ -498,7 +634,10 @@ class BoardGenerator(Generator):
             hang_hole_diameter=float(rng.randrange(14, 30, 2)),
             tongue_length=tongue_length,
             tongue_width=tongue_width,
-            engrave_border=rng.random() < 0.3,
+            handle=handle,
+            handle_length=float(rng.randrange(100, 160, 10)),
+            handle_width=float(rng.randrange(30, 42, 2)),
+            engrave_border=border,
             engrave_inset=float(rng.randrange(6, 16, 2)),
             material=rng.choice(["oak", "walnut", "maple", "cherry", "beech"]),
             thickness=thickness,

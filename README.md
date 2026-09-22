@@ -72,7 +72,7 @@ guess.
 | niche | what it makes | machine |
 |---|---|---|
 | `trays` | Serving, valet and snack trays with recessed compartments and handles | router |
-| `boards` | Cutting and charcuterie boards with juice grooves, handles and hang holes | router |
+| `boards` | Cutting and charcuterie boards with juice grooves, hand holds and hang holes | router |
 | `coasters` | Coaster sets in five shapes with engraved patterns and a holder | router |
 | `ashtrays` | Cigar and whiskey trays with a glass recess, cigar rests and an ash well | router |
 | `stands` | Three-part slot-together phone and tablet docks, no glue | router |
