@@ -339,27 +339,65 @@ def paw(width: float, inside_radius: float = 0.0, toes: int = 4) -> Ring:
     return _finish(list(merged.exterior.coords), inside_radius, width)
 
 
-def leaf(width: float, inside_radius: float = 0.0, fullness: float = 0.42) -> Ring:
-    """A pointed leaf from two mirrored cubic Bezier curves.
+def leaf(
+    width: float,
+    inside_radius: float = 0.0,
+    fullness: float = 0.50,
+    stalk: float = 0.17,
+) -> Ring:
+    """A leaf: a stalk, a broad shoulder, and a blade drawn out to a point.
+
+    The first version of this was two mirrored Bezier curves meeting at both
+    ends, which is a lens.  A lens is symmetric about both axes and a leaf is
+    not: it is widest near where it joins the stalk and tapers the rest of the
+    way to the tip.  Pushing the control points toward the base, and hanging
+    the blade off a stalk instead of a second point, is the whole difference
+    between something that reads as a leaf and something that reads as an
+    almond.
 
     Args:
-        width: Overall width in mm.
-        inside_radius: Cutter radius, unused; both tips are convex.
-        fullness: How far the control points push out, as a fraction of the
-            length.
+        width: Overall width in mm, stalk included.
+        inside_radius: Cutter radius, used to keep the stalk wide enough to
+            cut and to relieve where it meets the blade.
+        fullness: How far the blade swells from the midrib, as a fraction of
+            the overall length.
+        stalk: Stalk length as a fraction of the overall length.
 
     Returns:
         A closed ring.
+
+    Raises:
+        ValueError: If the stalk and blade do not merge into one piece.
     """
-    tip_a: Point = (0.0, 0.0)
-    tip_b: Point = (1.0, 0.0)
+    tip: Point = (1.0, 0.0)
+    base: Point = (stalk, 0.0)
+    shoulder = 0.24
     upper = geo.bezier_points(
-        tip_a, (0.22, fullness), (0.78, fullness), tip_b, samples=90
+        base,
+        (stalk + shoulder * 0.5, fullness),
+        (stalk + shoulder * 1.9, fullness * 0.72),
+        tip,
+        samples=120,
     )
     lower = geo.bezier_points(
-        tip_b, (0.78, -fullness), (0.22, -fullness), tip_a, samples=90
+        tip,
+        (stalk + shoulder * 1.9, -fullness * 0.72),
+        (stalk + shoulder * 0.5, -fullness),
+        base,
+        samples=120,
     )
-    return _finish(geo.dedupe(upper + lower[1:]), inside_radius, width)
+    blade = geo.polygon_from_ring(geo.dedupe(upper + lower[1:]))
+
+    # A stalk thinner than the cutter is not a stalk, it is a rejection, so it
+    # widens to suit whatever is cutting it.
+    half = max(0.030, 1.25 * inside_radius / width) if width > 0 else 0.030
+    stem = geo.polygon_from_ring(
+        geo.rect_ring(stalk + shoulder * 0.4, half * 2.0, 0.0, -half)
+    )
+    merged = unary_union([blade, stem])
+    if merged.geom_type != "Polygon":
+        raise ValueError("the leaf stalk did not merge with the blade")
+    return _finish(list(merged.exterior.coords), inside_radius, width)
 
 
 def snowflake(
