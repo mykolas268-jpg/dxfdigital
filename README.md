@@ -75,6 +75,15 @@ the first contact sheet drawn this way immediately showed a 1560 mm bookcase
 with two shelves 1400 mm apart, a flaw that had been invisible for as long as
 the output was a nest of panels.
 
+**A recess has to follow the outline it is set into.** A tray is its shape
+moved inwards, and on an outline with small lobes — a paw's toes — offsetting
+eats them and rounding blobs what is left, so the result reads as a puddle
+inside a paw. That is caught by comparing how convoluted each is relative to
+its own size (perimeter² / area, which is dimensionless): measured across
+every shape, the paw comes out 1.40× its outline and everything that trays
+well sits between 0.78 and 1.05. So the check names no shape, and would catch
+the next one.
+
 **Parameters are drawn against each other, not independently.** A sampler
 that picks a tab width and a panel width separately proposes a 30 mm tab for a
 76 mm panel; one that picks a shelf count and a height separately gives a
@@ -271,7 +280,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1040 tests
+python -m pytest          # 1048 tests
 ```
 
 ```
@@ -315,8 +324,6 @@ Stated plainly, because finding these out at the machine is expensive.
 - **The pumpkin's lobes are engraved** rather than cut into the silhouette.
   That is the right call — modulating the profile makes it read as a flower —
   but it means the silhouette alone is a rounded rectangle.
-- **A paw serving tray looks poor** — the recess follows the toes and inflates
-  them. Use the paw as a plaque or a coaster.
 - **PDF templates are verified geometrically**, by figure dimensions and
   MediaBox, not by rasterising the output. No PDF rasteriser was available in
   the build environment.

@@ -99,6 +99,55 @@ class SeasonalParams(GeneratorParams):
         return seasonal_tags[self.shape]
 
 
+#: How much wigglier than its own outline a recess may be before the inward
+#: offset has stopped following the shape and started dissolving it.  Measured
+#: across every shape at 400 mm: the paw comes out at 1.40, because its toes
+#: are small lobes that an offset turns into blobs, and everything that trays
+#: well sits between 0.78 and 1.05.  The gap is wide enough that the exact
+#: threshold does not matter much.
+MAX_RECESS_DISTORTION = 1.20
+
+
+def _shape_factor(ring: Ring) -> float:
+    """Perimeter squared over area: how wiggly a shape is, regardless of size.
+
+    Args:
+        ring: A closed ring.
+
+    Returns:
+        The dimensionless factor; a circle gives about 12.6 and it rises the
+        more convoluted the boundary gets.
+    """
+    poly = geo.polygon_from_ring(ring)
+    return poly.length ** 2 / poly.area if poly.area > 0 else float("inf")
+
+
+def _check_recess_follows(outline: Ring, recess: Ring, shape: str) -> None:
+    """Refuse a recess that the inward offset has distorted out of shape.
+
+    A tray's recess should be the outline moved inwards, not a different
+    shape.  On an outline with small lobes - a paw's toes - offsetting eats
+    them and rounding blobs what is left, and the result reads as a puddle
+    inside a paw rather than as a paw-shaped tray.  Comparing how wiggly each
+    is, relative to its own size, catches that without naming any shape.
+
+    Args:
+        outline: The part's outer profile.
+        recess: The recess ring.
+        shape: Shape name, for the message.
+
+    Raises:
+        ValueError: If the recess no longer follows the outline.
+    """
+    ratio = _shape_factor(recess) / _shape_factor(outline)
+    if ratio > MAX_RECESS_DISTORTION:
+        raise ValueError(
+            f"a recess set into a {shape} does not follow its outline: the "
+            f"offset leaves a shape {ratio:.2f} times as convoluted, which "
+            f"reads as a puddle rather than a {shape}-shaped tray"
+        )
+
+
 def _shaped_part(params: SeasonalParams, index: int) -> Part:
     """Build one shaped part.
 
@@ -123,7 +172,9 @@ def _shaped_part(params: SeasonalParams, index: int) -> Part:
                 f"{min(geo.size_of(recess)):.0f} mm of recess"
             )
         floor = max(params.tool_diameter * 0.8, 6.0)
-        pockets.append(Pocket(geo.round_convex(recess, floor), params.pocket_depth))
+        recess = geo.round_convex(recess, floor)
+        _check_recess_follows(outline, recess, params.shape)
+        pockets.append(Pocket(recess, params.pocket_depth))
 
     if params.hang_hole:
         holes.append(

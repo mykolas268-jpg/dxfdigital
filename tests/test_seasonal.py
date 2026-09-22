@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from shapely.geometry import LineString, Polygon
 
 from dxfgen.core import geometry as geo
 from dxfgen.core.layers import ENGRAVE
 from dxfgen.niches.seasonal import SeasonalForm, SeasonalGenerator, SeasonalParams
-from dxfgen.niches.shapes import shape_names
+from dxfgen.niches.shapes import shape_names, shape_ring
 
 
 @pytest.fixture(scope="module")
@@ -18,6 +20,10 @@ def gen() -> SeasonalGenerator:
 
 ROUTER_SHAPES = [n for n in shape_names() if n != "snowflake"]
 
+#: Shapes a recess can be sunk into.  A snowflake has no rim to sink one into,
+#: and a paw's toes dissolve when the outline is offset inwards.
+TRAY_SHAPES = [n for n in ROUTER_SHAPES if n != "paw"]
+
 
 @pytest.mark.parametrize("shape", ROUTER_SHAPES)
 def test_every_shape_makes_a_valid_plaque(gen: SeasonalGenerator, shape: str) -> None:
@@ -25,8 +31,10 @@ def test_every_shape_makes_a_valid_plaque(gen: SeasonalGenerator, shape: str) ->
     assert gen.check(design).ok, gen.check(design).format()
 
 
-@pytest.mark.parametrize("shape", ROUTER_SHAPES)
-def test_every_shape_makes_a_valid_tray(gen: SeasonalGenerator, shape: str) -> None:
+@pytest.mark.parametrize("shape", TRAY_SHAPES)
+def test_every_trayable_shape_makes_a_valid_tray(
+    gen: SeasonalGenerator, shape: str
+) -> None:
     design = gen.make(shape=shape, form=SeasonalForm.TRAY, width=380)
     assert gen.check(design).ok, gen.check(design).format()
 
@@ -139,3 +147,47 @@ def test_the_name_and_slug_carry_the_occasion(gen: SeasonalGenerator) -> None:
 def test_the_notes_state_the_work_is_original(gen: SeasonalGenerator) -> None:
     joined = " ".join(gen.make(shape="heart").notes)
     assert "equations" in joined and "original" in joined
+
+
+# --------------------------------------------------------------------------- #
+# a recess has to follow the outline it is set into
+# --------------------------------------------------------------------------- #
+def test_the_shape_factor_rises_with_wiggliness() -> None:
+    """A circle is the least convoluted shape there is; a star is not."""
+    from dxfgen.niches.seasonal import _shape_factor
+
+    circle = _shape_factor(geo.circle_ring(0.0, 0.0, 50.0))
+    square = _shape_factor(geo.rect_ring(100.0, 100.0))
+    star = _shape_factor(shape_ring("star", 100.0))
+    assert circle == pytest.approx(4 * math.pi, rel=0.01), "4 pi for a circle"
+    assert circle < square < star
+
+
+def test_the_shape_factor_ignores_size() -> None:
+    from dxfgen.niches.seasonal import _shape_factor
+
+    small = _shape_factor(shape_ring("heart", 80.0))
+    large = _shape_factor(shape_ring("heart", 640.0))
+    assert small == pytest.approx(large, rel=0.02)
+
+
+def test_a_paw_tray_is_refused_because_its_toes_dissolve(
+    gen: SeasonalGenerator,
+) -> None:
+    """Offsetting inward eats small lobes; the result reads as a puddle."""
+    with pytest.raises(ValueError, match="does not follow"):
+        gen.make(shape="paw", form="tray", width=400, mode="router", thickness=25)
+
+
+@pytest.mark.parametrize("width", [300.0, 400.0, 480.0])
+def test_a_paw_tray_is_refused_at_every_size(
+    gen: SeasonalGenerator, width: float
+) -> None:
+    with pytest.raises(ValueError):
+        gen.make(shape="paw", form="tray", width=width, mode="router", thickness=25)
+
+
+def test_a_paw_still_works_as_a_plaque(gen: SeasonalGenerator) -> None:
+    """The refusal is about the recess, not about the shape."""
+    design = gen.make(shape="paw", form="plaque", width=350)
+    assert gen.check(design).ok
