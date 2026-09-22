@@ -200,7 +200,13 @@ Works on any DXF, not just ones from here. Checks structure (ezdxf audit, open
 contours, splines, duplicates, self-intersections, units, origin) and, when it
 knows the machine, whether the geometry is reachable.
 
+`--mode`, `--tool` and `--kerf` have no defaults. Left out, each is taken from
+what the file records it was written for, so a laser file from here is judged
+by laser rules without being told. Given, each wins over that record on its own
+— `--tool` names a cutter without turning a laser file into a router one.
+
 ```bash
+dxfgen validate one-of-ours.dxf              # judged as the file says
 dxfgen validate bought-file.dxf --tool 6.35
 dxfgen validate bought-file.dxf --mode laser --kerf 0.12
 ```
@@ -297,7 +303,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1088 tests
+python -m pytest          # 1092 tests
 ```
 
 ```

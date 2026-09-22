@@ -14,6 +14,7 @@ wrong (unknown niche, bad parameter).
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -442,23 +443,98 @@ def bundle(
 # --------------------------------------------------------------------------- #
 # validate
 # --------------------------------------------------------------------------- #
+def _recorded_machine(path: Path) -> Machine | None:
+    """Read the machine a file records having been written for.
+
+    Args:
+        path: The DXF to look in.
+
+    Returns:
+        The machine, or ``None`` if the file does not record one or cannot be
+        read at all - an unreadable file is not reported here, because
+        :func:`validate_dxf_file` reads it again and says so properly.
+    """
+    import ezdxf
+    from ezdxf.lldxf.const import DXFError
+
+    from .core.export_dxf import machine_from_document
+
+    try:
+        return machine_from_document(ezdxf.readfile(str(path)))
+    except (OSError, DXFError):
+        return None
+
+
+def _machine_for(
+    path: Path,
+    mode: Mode | None,
+    tool_diameter: float | None,
+    kerf: float | None,
+) -> Machine | None:
+    """Decide what machine one file should be judged against.
+
+    Flags win over the file's own record, field by field, so ``--tool`` on a
+    laser file changes the cutter without turning it into a router file.  What
+    no flag names comes from that record, and from the defaults only if the
+    file carries none.
+
+    Args:
+        path: The DXF about to be checked.
+        mode: ``--mode``, or ``None`` if it was not given.
+        tool_diameter: ``--tool``, or ``None`` if it was not given.
+        kerf: ``--kerf``, or ``None`` if it was not given.
+
+    Returns:
+        The machine to judge against, or ``None`` when no flag was given and
+        the file records nothing - which is what lets
+        :func:`validate_dxf_file` skip the cutter checks rather than run them
+        against a guess.
+    """
+    if mode is None and tool_diameter is None and kerf is None:
+        return None
+    base = _recorded_machine(path) or Machine()
+    return replace(
+        base,
+        mode=base.mode if mode is None else mode,
+        tool_diameter=(
+            base.tool_diameter if tool_diameter is None else tool_diameter
+        ),
+        kerf=base.kerf if kerf is None else kerf,
+    )
+
+
 @app.command()
 def validate(
     files: Annotated[
         list[Path], typer.Argument(help="DXF files to check.", exists=True)
     ],
     tool_diameter: Annotated[
-        float, typer.Option("--tool", min=0.01, help="Cutter diameter to judge against.")
-    ] = 6.35,
+        Optional[float],
+        typer.Option(
+            "--tool",
+            min=0.01,
+            help="Cutter diameter to judge against; default is what the file says.",
+        ),
+    ] = None,
     mode: Annotated[
-        Mode, typer.Option("--mode", help="Machine mode.", case_sensitive=False)
-    ] = Mode.ROUTER,
-    kerf: Annotated[float, typer.Option("--kerf", min=0.0, help="Laser kerf.")] = 0.15,
+        Optional[Mode],
+        typer.Option(
+            "--mode",
+            help="Machine mode; default is what the file says.",
+            case_sensitive=False,
+        ),
+    ] = None,
+    kerf: Annotated[
+        Optional[float],
+        typer.Option(
+            "--kerf", min=0.0, help="Laser kerf; default is what the file says."
+        ),
+    ] = None,
 ) -> None:
     """Check DXF files, including ones this tool did not make."""
-    machine = Machine(mode=mode, tool_diameter=tool_diameter, kerf=kerf)
     worst = EXIT_OK
     for path in files:
+        machine = _machine_for(path, mode, tool_diameter, kerf)
         report = validate_dxf_file(path, machine=machine)
         _print_report(report, str(path))
         if report.errors:
