@@ -7,6 +7,8 @@ standard automatically.
 
 from __future__ import annotations
 
+import hashlib
+
 from pathlib import Path
 
 import pytest
@@ -200,3 +202,37 @@ def test_no_niche_wastes_much_of_what_it_draws() -> None:
             made += len(run.designs)
             attempts += run.attempts
     assert (attempts - made) / attempts <= 0.06
+
+
+# --------------------------------------------------------------------------- #
+# the same seed must give the same files, not just the same design names
+# --------------------------------------------------------------------------- #
+def _digests(root: Path) -> dict[str, str]:
+    """Hash every file written under a root, keyed by its path within it."""
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
+def test_the_same_seed_writes_the_same_bytes(gen: Generator, tmp_path: Path) -> None:
+    """Reproducible means the files, not only the slugs.
+
+    ezdxf stamps a document with the time and a fresh GUID, and matplotlib
+    stamps a PDF with the time, so without care the same seed produced files
+    that differed in a dozen lines of metadata - enough that no checksum was
+    stable and a seller could not tell a re-run from a real change.
+    """
+    written = []
+    for label in ("first", "second"):
+        root = tmp_path / label
+        design = gen.variants(1, seed=404)[0]
+        write_design(design, root, formats=("dxf", "svg", "pdf", "readme"))
+        written.append(_digests(root))
+
+    first, second = written
+    assert set(first) == set(second), "the two runs wrote different files"
+    differing = sorted(name for name in first if first[name] != second[name])
+    assert not differing, f"{gen.niche} is not reproducible: {differing}"

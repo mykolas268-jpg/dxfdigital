@@ -28,6 +28,8 @@ matplotlib.use("Agg")
 
 import numpy as np  # noqa: E402
 from matplotlib.backends.backend_pdf import PdfPages  # noqa: E402
+
+from datetime import datetime, timezone  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.patches import PathPatch  # noqa: E402
 
@@ -317,6 +319,11 @@ class PagePlan:
     origin_y: float = 0.0
 
 
+#: Timestamp written into every PDF, so the same design gives the same
+#: file.  See where it is used for why a fixed date is the right one.
+EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
 def plan_pages(
     design: Design,
     paper: PaperSize = A4,
@@ -513,4 +520,9 @@ def write_pdf(
         info["Title"] = f"{placed.name} - 1:1 template"
         info["Subject"] = placed.description
         info["Creator"] = "dxfgen"
+        # matplotlib stamps the current time here, which is the only thing
+        # that would make two runs of the same design differ.  A generated
+        # template has no meaningful creation moment - it is a function of its
+        # parameters - so it gets a fixed one and the file stays comparable.
+        info["CreationDate"] = EPOCH
     return out, report

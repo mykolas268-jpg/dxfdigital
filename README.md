@@ -179,9 +179,13 @@ Adds to the niche folder:
 - `<niche>_bundle.zip` — built from the manifest, so leftovers from an earlier
   run with a different seed are reported and excluded, never shipped
 
-The same seed and count reproduce the same designs exactly, and raising the
-count extends the set rather than reshuffling it: variant *i* depends only on
-`(seed, i)`.
+The same seed and count reproduce the same designs **byte for byte**, and
+raising the count extends the set rather than reshuffling it: variant *i*
+depends only on `(seed, i)`. That needed work — ezdxf stamps every file with
+the time and a fresh GUID, and matplotlib stamps every PDF with the time, so
+the same seed was producing files that differed in a dozen lines of metadata.
+Both are now fixed, so a checksum is stable and a re-run is distinguishable
+from a real change.
 
 Bundles are split at 20 MB, because Etsy, Gumroad and most other download
 marketplaces cap a single file there and a 25 MB zip cannot be uploaded at all.
@@ -293,7 +297,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1067 tests
+python -m pytest          # 1076 tests
 ```
 
 ```

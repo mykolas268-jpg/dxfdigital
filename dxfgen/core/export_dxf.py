@@ -18,7 +18,9 @@ A design is validated before anything is written.  An invalid design raises
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import ezdxf
 from ezdxf import zoom
@@ -30,6 +32,7 @@ from .layers import layer_def
 from .validate import Report, ValidationConfig, validate_design
 
 __all__ = [
+    "reproducible_output",
     "PROVENANCE_MODE",
     "PROVENANCE_TOOL",
     "PROVENANCE_KERF",
@@ -111,6 +114,38 @@ PROVENANCE_TOOL: str = "DXFGEN_TOOL_DIAMETER"
 PROVENANCE_KERF: str = "DXFGEN_KERF"
 PROVENANCE_THICKNESS: str = "DXFGEN_THICKNESS"
 PROVENANCE_SLUG: str = "DXFGEN_DESIGN"
+
+
+@contextmanager
+def reproducible_output() -> "Iterator[None]":
+    """Write DXF files that depend only on their contents.
+
+    ezdxf stamps every document with the current time and a fresh version
+    GUID at save.  That is right for a drawing somebody is editing and wrong
+    for a generated one: it means the same seed produces files that differ in
+    twelve lines of metadata, so a seller who regenerates a bundle cannot tell
+    a real change from a re-run and no checksum is stable.
+
+    ezdxf exposes exactly this as ``write_fixed_meta_data_for_testing``.  The
+    name says testing, but what it does - a fixed date and a constant GUID -
+    is what a generated file wants, and a DXF fingerprint GUID means nothing
+    for a file that is a pure function of its parameters.  It is a global
+    option, so it is set only around our own writing and put back afterwards,
+    rather than changed for anyone who imports this package.
+
+    The document has to be *built* inside this as well as saved inside it:
+    ezdxf stamps a file once when it is created and again when it is written,
+    and wrapping only the save leaves the creation stamp ticking.
+
+    Yields:
+        Nothing; the option is restored on the way out, exceptions included.
+    """
+    previous = ezdxf.options.write_fixed_meta_data_for_testing
+    ezdxf.options.write_fixed_meta_data_for_testing = True
+    try:
+        yield
+    finally:
+        ezdxf.options.write_fixed_meta_data_for_testing = previous
 
 
 def _write_provenance(doc: Drawing, design: Design) -> None:
@@ -211,8 +246,12 @@ def write_dxf(
         report.raise_for_status()
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    doc = build_document(placed)
-    doc.saveas(out)
+    # Both the build and the save have to be inside: ezdxf stamps the document
+    # once when it is created and again when it is written, and covering only
+    # the save leaves the creation stamp ticking.
+    with reproducible_output():
+        doc = build_document(placed)
+        doc.saveas(out)
     return out, report
 
 
