@@ -39,7 +39,7 @@ from .base import (
     smallest_stock,
 )
 
-__all__ = ["StandSize", "StandParams", "StandGenerator"]
+__all__ = ["BackStyle", "StandSize", "StandParams", "StandGenerator"]
 
 
 class StandSize(str, Enum):
@@ -54,6 +54,24 @@ _PRESETS: dict[StandSize, tuple[float, float, float, float]] = {
     StandSize.PHONE: (100.0, 100.0, 28.0, 85.0),
     StandSize.TABLET: (140.0, 150.0, 38.0, 130.0),
 }
+
+
+class BackStyle(str, Enum):
+    """The shape of the back panel's top edge.
+
+    Only the back is shaped.  The lip is short, mostly hidden behind the
+    device, and carries the cable notch, so a profile on it would be work
+    nobody sees and geometry the notch has to dodge.
+    """
+
+    SQUARE = "square"
+    """A flat top, square across."""
+    ARCH = "arch"
+    """A circular arc, highest in the middle."""
+    TAPER = "taper"
+    """Straight shoulders running in to a narrower flat top."""
+    PEAK = "peak"
+    """A shallow gable, highest in the middle."""
 
 
 class StandParams(GeneratorParams):
@@ -78,6 +96,12 @@ class StandParams(GeneratorParams):
     tabs: int = Field(2, ge=2, le=4, description="tabs per upright")
     tab_width: float = Field(
         24.0, ge=12.0, le=80.0, description="tab width in mm"
+    )
+    back_style: BackStyle = Field(
+        BackStyle.SQUARE, description="shape of the back panel's top edge"
+    )
+    back_shape_rise: float = Field(
+        28.0, ge=6.0, le=120.0, description="how far the shaped top rises, mm"
     )
     corner_radius: float = Field(
         6.0, ge=0.0, le=40.0, description="corner radius on the parts in mm"
@@ -187,6 +211,23 @@ class StandParams(GeneratorParams):
         """Drawn length of a mortise along the tab, in mm."""
         return self.machine().slot_width(self.tab_width)
 
+    def widest_tab(self) -> float:
+        """The widest tab this upright can carry, in mm.
+
+        Solves the same inequality :meth:`tab_positions` checks, rather than
+        restating it: tabs on an even pitch need ``min_wall`` plus the fit
+        clearance plus relief at both corners between each pair.  A sampler
+        that draws a tab width independently of the panel it goes in produces
+        a quarter of its variants unbuildable, which is how this got noticed.
+
+        Returns:
+            The widest workable tab, which may be zero or less when the panel
+            is too narrow for this tab count at all.
+        """
+        span = self.resolved_width() - 2.0 * self.feature_margin()
+        between = self.min_wall + self.clearance + 2.0 * self.relief_margin()
+        return (span + between) / self.tabs - between
+
     def tab_positions(self) -> list[float]:
         """Left edge of each tab, measured across the upright's width.
 
@@ -215,7 +256,60 @@ class StandParams(GeneratorParams):
         return [edge + index * (self.tab_width + gap) for index in range(self.tabs)]
 
 
-def _upright_ring(params: StandParams, height: float) -> Ring:
+def _top_edge(
+    width: float, top: float, style: BackStyle, rise: float
+) -> list[tuple[float, float]]:
+    """The profile across the top of an upright, right to left.
+
+    Walking the ring counter-clockwise the top is traversed from the right
+    side to the left, so that is the order here.  Every style is convex, which
+    is what keeps it cuttable: a round cutter travelling outside the profile
+    needs no relief on a corner that points outwards.
+
+    Args:
+        width: Panel width in mm.
+        top: Height of the panel's highest point, in mm.
+        style: Which profile to draw.
+        rise: How far the shaping rises above the shoulders, in mm.
+
+    Returns:
+        The points from the right shoulder across to the left shoulder.
+
+    Raises:
+        ValueError: If the rise leaves no panel below it.
+    """
+    if style is BackStyle.SQUARE:
+        return [(width, top), (0.0, top)]
+    rise = min(rise, top * 0.45)
+    if rise <= 0.0:
+        raise ValueError(f"a {top:g} mm upright has no room for a shaped top")
+    shoulder = top - rise
+    if style is BackStyle.PEAK:
+        return [(width, shoulder), (width / 2.0, top), (0.0, shoulder)]
+    if style is BackStyle.TAPER:
+        inset = min(width * 0.22, width / 2.0 - 8.0)
+        return [(width, shoulder), (width - inset, top), (inset, top), (0.0, shoulder)]
+    # An arc through the two shoulders and the midpoint of the top.
+    half = width / 2.0
+    radius = (half * half + rise * rise) / (2.0 * rise)
+    centre = top - radius
+    span = math.asin(min(1.0, half / radius))
+    # Even, so the apex is a sampled point: an odd count steps either side of
+    # it and the arch finishes a fraction below the height it says it is.
+    steps = max(8, int(math.degrees(span * 2.0) / 4.0))
+    steps += steps % 2
+    points = []
+    for index in range(steps + 1):
+        angle = span - 2.0 * span * index / steps
+        points.append((half + radius * math.sin(angle), centre + radius * math.cos(angle)))
+    return points
+
+
+def _upright_ring(
+    params: StandParams,
+    height: float,
+    style: BackStyle = BackStyle.SQUARE,
+) -> Ring:
     """Build an upright outline with tabs on its bottom edge.
 
     The tabs protrude by exactly the material thickness, so they come through
@@ -224,9 +318,13 @@ def _upright_ring(params: StandParams, height: float) -> Ring:
     Args:
         params: Stand parameters.
         height: Height of the upright above the base, in mm.
+        style: Shape of the top edge.
 
     Returns:
         A counter-clockwise ring whose bounding box starts at ``y = 0``.
+
+    Raises:
+        ValueError: If the shaped top does not fit the panel.
     """
     width = params.resolved_width()
     depth = params.thickness
@@ -234,7 +332,8 @@ def _upright_ring(params: StandParams, height: float) -> Ring:
     for left in params.tab_positions():
         right = left + params.tab_width
         ring.extend([(left, depth), (left, 0.0), (right, 0.0), (right, depth)])
-    ring.extend([(width, depth), (width, depth + height), (0.0, depth + height)])
+    ring.append((width, depth))
+    ring.extend(_top_edge(width, depth + height, style, params.back_shape_rise))
     return _relieve_profile(geo.dedupe(ring), params)
 
 
@@ -368,6 +467,19 @@ def _assembly(params: StandParams) -> Assembly:
     )
 
 
+#: Back profiles in the order a bundle works through them.  Drawn
+#: independently they cluster - one seed gave eight arches in nine docks -
+#: so the style rotates on the variant index, as the seasonal shapes do.
+#: The arch appears twice because it suits the most sizes.
+_BACK_CYCLE: tuple[BackStyle, ...] = (
+    BackStyle.ARCH,
+    BackStyle.TAPER,
+    BackStyle.SQUARE,
+    BackStyle.ARCH,
+    BackStyle.PEAK,
+)
+
+
 class StandGenerator(Generator):
     """Generates slot-together phone and tablet docks."""
 
@@ -393,7 +505,9 @@ class StandGenerator(Generator):
                 _base_part(params),
                 Part(
                     name="back",
-                    outline=_upright_ring(params, params.resolved_back_height()),
+                    outline=_upright_ring(
+                        params, params.resolved_back_height(), params.back_style
+                    ),
                 ),
                 _lip_part(params),
             ],
@@ -405,12 +519,14 @@ class StandGenerator(Generator):
         )
         design = Design(
             slug=slugify(
-                "dock", params.size.value, f"{params.resolved_width():g}w",
+                "dock", params.size.value, params.back_style.value,
+                f"{params.resolved_width():g}w",
                 f"gap{params.device_gap:g}", params.mode.value,
                 f"t{params.thickness:g}",
             ),
             name=(
                 f"Slot-together {params.size.value.title()} Dock, "
+                f"{params.back_style.value} back, "
                 f"{params.resolved_width():g} mm wide, "
                 f"{params.device_gap:g} mm channel"
             ),
@@ -483,15 +599,29 @@ class StandGenerator(Generator):
             rng.choice([3.0, 6.0, 6.0]) if laser else rng.choice([12.0, 18.0, 18.0])
         )
         depth, back, lip, width = _PRESETS[size]
+        panel_width = float(rng.randrange(int(width * 0.9), int(width * 1.25), 5))
+        tabs = rng.choice([2, 2, 3])
+        # The tab has to fit the panel it is cut into, so the panel is drawn
+        # first and the tab is sized to it.  A margin below the maximum keeps
+        # a real wall between the mortises rather than the minimum the
+        # validator will just about accept.
+        probe = StandParams(
+            size=size, width=panel_width, tabs=tabs, thickness=thickness,
+            mode="laser" if laser else "router",
+        )
+        widest = probe.widest_tab()
+        tab_width = float(max(14.0, min(rng.randrange(18, 34, 2), widest * 0.8)))
         return StandParams(
             size=size,
-            width=float(rng.randrange(int(width * 0.9), int(width * 1.25), 5)),
+            width=panel_width,
             base_depth=float(rng.randrange(int(depth * 0.95), int(depth * 1.3), 5)),
             back_height=float(rng.randrange(int(back * 0.85), int(back * 1.25), 5)),
             lip_height=float(rng.randrange(int(lip * 0.8), int(lip * 1.3), 2)),
             device_gap=max(float(rng.randrange(11, 20)), thickness * 0.6),
-            tabs=rng.choice([2, 2, 3]),
-            tab_width=float(rng.randrange(18, 34, 2)),
+            tabs=tabs,
+            tab_width=tab_width,
+            back_style=_BACK_CYCLE[index % len(_BACK_CYCLE)],
+            back_shape_rise=float(rng.randrange(18, 46, 4)),
             corner_radius=float(rng.randrange(0, 10, 2)),
             cable_slot=rng.random() < 0.7,
             cable_width=float(rng.randrange(12, 22, 2)),

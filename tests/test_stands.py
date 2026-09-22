@@ -11,7 +11,12 @@ import pytest
 from shapely.geometry import Polygon
 
 from dxfgen.core import geometry as geo
-from dxfgen.niches.stands import StandGenerator, StandParams, StandSize
+from dxfgen.niches.stands import (
+    BackStyle,
+    StandGenerator,
+    StandParams,
+    StandSize,
+)
 
 
 @pytest.fixture(scope="module")
@@ -193,3 +198,97 @@ def test_the_notes_state_the_mortise_size_and_channel(gen: StandGenerator) -> No
     joined = " ".join(design.notes)
     assert "18.20" in joined
     assert "15 mm channel" in joined
+
+
+# --------------------------------------------------------------------------- #
+# the shape of the back panel
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("style", list(BackStyle))
+def test_every_back_style_builds_and_validates(
+    gen: StandGenerator, style: BackStyle
+) -> None:
+    design = gen.make(size="tablet", back_style=style)
+    assert gen.check(design).ok, gen.check(design).format()
+
+
+@pytest.mark.parametrize("style", list(BackStyle))
+def test_a_shaped_back_keeps_its_width_and_height(
+    gen: StandGenerator, style: BackStyle
+) -> None:
+    """Shaping the top must not change what the dock is, only how it looks."""
+    square = gen.make(size="tablet", back_style=BackStyle.SQUARE)
+    shaped = gen.make(size="tablet", back_style=style)
+    back_of = lambda d: next(p for p in d.parts if p.name == "back")
+    assert back_of(shaped).size() == pytest.approx(back_of(square).size())
+
+
+@pytest.mark.parametrize("style", [BackStyle.ARCH, BackStyle.TAPER, BackStyle.PEAK])
+def test_a_shaped_back_removes_material(
+    gen: StandGenerator, style: BackStyle
+) -> None:
+    square = gen.make(size="tablet", back_style=BackStyle.SQUARE)
+    shaped = gen.make(size="tablet", back_style=style, back_shape_rise=34)
+    back_of = lambda d: next(p for p in d.parts if p.name == "back")
+    assert back_of(shaped).area() < back_of(square).area()
+
+
+@pytest.mark.parametrize("style", list(BackStyle))
+def test_only_the_back_is_shaped(gen: StandGenerator, style: BackStyle) -> None:
+    """The lip carries the cable notch; a profile on it is geometry to dodge."""
+    square = gen.make(size="tablet", back_style=BackStyle.SQUARE)
+    shaped = gen.make(size="tablet", back_style=style)
+    lip_of = lambda d: next(p for p in d.parts if p.name == "lip")
+    assert lip_of(shaped).area() == pytest.approx(lip_of(square).area())
+
+
+def test_the_back_style_is_in_the_slug(gen: StandGenerator) -> None:
+    for style in BackStyle:
+        assert style.value in gen.make(size="phone", back_style=style).slug
+
+
+def test_a_bigger_rise_takes_more_off(gen: StandGenerator) -> None:
+    small = gen.make(size="tablet", back_style=BackStyle.PEAK, back_shape_rise=12)
+    large = gen.make(size="tablet", back_style=BackStyle.PEAK, back_shape_rise=48)
+    back_of = lambda d: next(p for p in d.parts if p.name == "back")
+    assert back_of(large).area() < back_of(small).area()
+
+
+def test_the_rise_is_capped_by_the_panel(gen: StandGenerator) -> None:
+    """A rise taller than the panel would cut the back off its own tabs."""
+    design = gen.make(size="phone", back_style=BackStyle.PEAK, back_shape_rise=120)
+    back = next(p for p in design.parts if p.name == "back")
+    assert back.area() > 0
+    assert gen.check(design).ok
+
+
+# --------------------------------------------------------------------------- #
+# tabs are sized to the panel they go in
+# --------------------------------------------------------------------------- #
+def test_the_widest_tab_is_the_widest_that_actually_fits() -> None:
+    params = StandParams(size="tablet", width=140, tabs=3)
+    widest = params.widest_tab()
+    assert params.model_copy(update={"tab_width": widest - 0.1}).tab_positions()
+    with pytest.raises(ValueError, match="leaving no material"):
+        params.model_copy(update={"tab_width": widest + 0.5}).tab_positions()
+
+
+def test_a_narrower_panel_allows_a_narrower_tab() -> None:
+    wide = StandParams(size="tablet", width=180, tabs=2).widest_tab()
+    narrow = StandParams(size="tablet", width=110, tabs=2).widest_tab()
+    assert narrow < wide
+
+
+def test_more_tabs_allow_a_narrower_tab() -> None:
+    two = StandParams(size="tablet", width=160, tabs=2).widest_tab()
+    three = StandParams(size="tablet", width=160, tabs=3).widest_tab()
+    assert three < two
+
+
+def test_sampled_docks_rarely_fail_to_build(gen: StandGenerator) -> None:
+    """Drawing a tab width independently of the panel wasted a quarter of them."""
+    attempts = failures = 0
+    for seed in (7, 31, 42, 2026):
+        run = gen.sample_variants(12, seed=seed)
+        attempts += run.attempts
+        failures += len(run.skips)
+    assert failures / attempts < 0.1, f"{failures}/{attempts} rejected"

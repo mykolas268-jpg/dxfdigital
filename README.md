@@ -92,7 +92,7 @@ guess.
 | `boards` | Cutting and charcuterie boards with juice grooves, hand holds and hang holes | router |
 | `coasters` | Coaster sets in five shapes with engraved patterns and a holder | router |
 | `ashtrays` | Cigar and whiskey trays with a glass recess, cigar rests and an ash well | router |
-| `stands` | Three-part slot-together phone and tablet docks, no glue | router |
+| `stands` | Three-part slot-together phone and tablet docks in four back profiles, no glue | router |
 | `boxes` | Finger-jointed boxes with a tabbed floor and an optional lid | laser |
 | `furniture` | Flat-pack slot-together shelves and tables, nested onto sheet stock | router |
 | `seasonal` | Themed plaques, shaped trays and coaster sets from parametric curves | either |
@@ -261,7 +261,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 987 tests
+python -m pytest          # 1009 tests
 ```
 
 ```
