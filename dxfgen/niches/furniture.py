@@ -121,6 +121,29 @@ class FurnitureParams(GeneratorParams):
         return (machine.slot_width(self.tab_width), machine.slot_width(self.thickness))
 
 
+def widest_tab(params: FurnitureParams, length: float) -> float:
+    """The widest tab that fits along one joint, in mm.
+
+    Solves the inequality :func:`_tab_spans` checks rather than restating it,
+    so the two cannot drift apart.
+
+    Args:
+        params: Furniture parameters.
+        length: The edge length the tabs are spread along, in mm.
+
+    Returns:
+        The widest workable tab, which may be zero or less on an edge too
+        short for this tab count.
+    """
+    edge = (
+        max(params.min_wall, params.corner_radius + params.tool_diameter / 2.0)
+        + params.relief_margin()
+        + params.clearance / 2.0
+    )
+    span = length - 2.0 * edge
+    return (span - (params.tabs - 1) * params.min_wall) / params.tabs
+
+
 def _tab_spans(params: FurnitureParams, length: float) -> list[tuple[float, float]]:
     """Where the tabs sit along a joint, in the panel's coordinates.
 
@@ -363,7 +386,17 @@ def _shelf_unit(params: FurnitureParams) -> list[Part]:
 
 
 def _cross_table(params: FurnitureParams) -> list[Part]:
-    """Two cross-lapped legs and a top."""
+    """Two cross-lapped legs and a top.
+
+    Raises:
+        ValueError: On an odd tab count, which no cross-lapped table can take.
+    """
+    if params.tabs % 2:
+        raise ValueError(
+            f"a cross-lapped table needs an even tab count, not {params.tabs}: "
+            f"the legs cross at the centre of the top, and an odd count puts a "
+            f"tab there too, so its mortise lands on top of the other leg's"
+        )
     thickness = params.thickness
     machine = params.machine()
     slot = machine.slot_width(thickness)
@@ -634,6 +667,20 @@ class FurnitureGenerator(Generator):
             depth = float(rng.randrange(35, 70) * 10)
             height = float(rng.randrange(34, 76) * 10)
             shelves = 1
+        # The arch is cut into the span left between the two feet, so it has
+        # to fit there.  Drawn independently it asks for a 160 mm arch across
+        # a 40 mm span, which is not a shallow arch, it is no panel at all.
+        foot_inset = float(rng.randrange(50, 100, 10))
+        shortest = min(depth, width if form is FurnitureForm.TABLE else depth)
+        span = shortest - 2.0 * foot_inset
+        foot_arch = rng.choice([0.0, 50.0, 60.0, 80.0])
+        if foot_arch * 2.0 > span:
+            foot_arch = max(0.0, float(int(span / 2.0 / 10.0) * 10.0))
+        tabs = (
+            rng.choice([2, 2, 4]) if form is FurnitureForm.TABLE
+            else rng.choice([2, 2, 3])
+        )
+        tab_width = float(rng.randrange(40, 90, 10))
         drawn = FurnitureParams(
             form=form,
             thickness=thickness,
@@ -641,12 +688,23 @@ class FurnitureGenerator(Generator):
             depth=min(depth, width - 80.0),
             height=height,
             shelves=shelves,
-            tabs=rng.choice([2, 2, 3]),
-            tab_width=float(rng.randrange(40, 90, 10)),
-            foot_arch=rng.choice([0.0, 50.0, 60.0, 80.0]),
-            foot_inset=float(rng.randrange(50, 100, 10)),
+            tabs=tabs,
+            tab_width=tab_width,
+            foot_arch=foot_arch,
+            foot_inset=foot_inset,
             corner_radius=float(rng.randrange(0, 20, 4)),
             material=rng.choice(["birch plywood", "poplar plywood", "oak veneer ply"]),
+        )
+        # A tab has to fit the shortest joint it runs along, so the panels are
+        # drawn first and the tab sized to them.
+        joints = (
+            [drawn.depth] if form is FurnitureForm.SHELF
+            else [drawn.width - 2 * drawn.corner_radius,
+                  drawn.depth - 2 * drawn.corner_radius]
+        )
+        widest = min(widest_tab(drawn, length) for length in joints)
+        drawn = drawn.model_copy(
+            update={"tab_width": max(25.0, min(tab_width, widest * 0.85))}
         )
         if form is not FurnitureForm.SHELF:
             return drawn

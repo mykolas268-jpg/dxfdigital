@@ -8,6 +8,7 @@ equations - so the results are original and safe to sell.
 
 from __future__ import annotations
 
+import math
 import random
 from enum import Enum
 
@@ -286,6 +287,18 @@ class SeasonalGenerator(Generator):
             forms = [f for f in forms if f is not SeasonalForm.TRAY]
         form = rng.choice(forms)
         laser = True if shape == "snowflake" else rng.random() < 0.35
+        # A tray is a recess in thick stock.  Drawn independently of the
+        # machine it lands as a 6 mm recess in 3 mm laser ply, which is not a
+        # tray and not cuttable; the form wins and the work goes to a router.
+        if form is SeasonalForm.TRAY:
+            laser = False
+        # A hanging hole a router cannot enter is not a hole.  The floor is the
+        # cutter itself, with the validator's own feature margin on top.
+        tool = 6.35
+        smallest_hole = 4.0 if laser else math.ceil(tool * 1.15)
+        hang_hole_diameter = float(
+            max(smallest_hole, rng.randrange(6, 16, 2))
+        )
         low, high = _FORM_WIDTH[form]
         width = float(rng.randrange(int(low), int(high), 10))
         thickness = 3.0 if laser else rng.choice([19.0, 19.0, 25.0])
@@ -297,7 +310,7 @@ class SeasonalGenerator(Generator):
             engrave_detail=rng.random() < 0.8,
             border_inset=float(rng.randrange(6, 16, 2)),
             hang_hole=form is SeasonalForm.PLAQUE and rng.random() < 0.6,
-            hang_hole_diameter=float(rng.randrange(6, 14, 2)),
+            hang_hole_diameter=hang_hole_diameter,
             pocket_inset=float(rng.randrange(18, 34, 2)),
             pocket_depth=rng.choice([6.0, 8.0, 10.0]),
             mode="laser" if laser else "router",

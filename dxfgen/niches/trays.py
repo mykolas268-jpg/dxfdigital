@@ -88,6 +88,12 @@ MAX_CELL_ASPECT = 4.5
 #: a detail bitten out of a flat edge; when it is as wide as the flat itself
 #: it stops reading as a grip and starts reading as a waist.
 SCALLOP_RUN_FRACTION = 0.9
+
+#: Widest scallop a superellipse outline can take, as a fraction of the tray's
+#: width.  Measured, not derived: the nearly-flat stretch at the middle of a
+#: superellipse end runs to about a sixth of the width, and a scallop wider
+#: than that runs off into the curve and is refused.
+SOFT_SCALLOP_FRACTION = 0.16
 #: Smallest rim that can carry an INFO label, in mm.
 MIN_LABEL_RIM = 12.0
 
@@ -703,9 +709,17 @@ class TrayGenerator(Generator):
         # the recess dominant, so only trays above a certain width can wear a
         # cutout handle at all.
         widest_handle = (1.0 - MIN_RECESS_FRACTION) / 2.0 * width - 2.0 * 8.0
-        # A scallop needs a flat end to bite into, which only the rounded and
-        # soft outlines have; see SCALLOP_RUN_FRACTION.
-        scallop_ok = style is not TrayStyle.PILL
+        # A scallop needs a straight run at the end to bite into.  A rounded
+        # rectangle has one the length of its flat edge; a superellipse has
+        # only the nearly-flat stretch at its middle, which measures out at
+        # about a sixth of the tray's width and disappears below 240 mm; a
+        # pill has none at all.  The earlier comment here claimed the soft
+        # outline had a flat end, and a twentieth of sampled trays were
+        # rejected for believing it.
+        widest_scallop = (
+            width * SOFT_SCALLOP_FRACTION if style is TrayStyle.SOFT else width
+        )
+        scallop_ok = style is not TrayStyle.PILL and widest_scallop >= 40.0
         if widest_handle >= 30.0:
             choices = [HandleStyle.CUTOUT] * 3 + [HandleStyle.NONE]
             if scallop_ok:
@@ -715,10 +729,20 @@ class TrayGenerator(Generator):
             if scallop_ok:
                 choices += [HandleStyle.SCALLOP, HandleStyle.SCALLOP]
         handle = rng.choice(choices)
+        # Floored at the schema minimum: this value is passed whatever the
+        # handle is, and a tray with a cutout handle must not be rejected over
+        # a scallop width it never uses.  scallop_ok above has already ruled
+        # out choosing a scallop where 40 mm will not fit.
         scallop_width = float(
-            rng.randrange(40, 100, 10)
-            if style is TrayStyle.ROUNDED
-            else rng.randrange(40, 56, 4)
+            max(
+                40.0,
+                min(
+                    rng.randrange(40, 100, 10)
+                    if style is TrayStyle.ROUNDED
+                    else rng.randrange(40, 56, 4),
+                    widest_scallop,
+                ),
+            )
         )
         handle_width = float(rng.randrange(30, max(32, int(min(44, widest_handle))) + 1, 2))
         thickness = rng.choice([19.0, 19.0, 25.0, 18.0])

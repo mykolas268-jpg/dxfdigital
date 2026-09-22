@@ -75,6 +75,16 @@ the first contact sheet drawn this way immediately showed a 1560 mm bookcase
 with two shelves 1400 mm apart, a flaw that had been invisible for as long as
 the output was a nest of panels.
 
+**Parameters are drawn against each other, not independently.** A sampler
+that picks a tab width and a panel width separately proposes a 30 mm tab for a
+76 mm panel; one that picks a shelf count and a height separately gives a
+1560 mm bookcase two shelves. Every such variant is correctly refused, and a
+quarter of the work is thrown away to find that out. Each sampler now draws
+the containing thing first and sizes what goes in it by solving the same
+inequality the geometry checks — never by restating it, so the two cannot
+drift apart. Measured across nine niches and seven seeds, 3% of proposals are
+rejected, and a contract test holds each niche under 12%.
+
 **Files say what machine they are for.** A DXF has nowhere standard to record
 this, so `dxfgen validate` on a laser file would otherwise apply router rules
 and flag every finger joint. dxfgen writes the mode, cutter, kerf and thickness
@@ -261,7 +271,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1009 tests
+python -m pytest          # 1019 tests
 ```
 
 ```

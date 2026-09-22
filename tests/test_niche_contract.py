@@ -163,3 +163,40 @@ def test_unknown_parameters_are_refused(gen: Generator) -> None:
 
     with pytest.raises(ValidationError):
         gen.parse({"definitely_not_a_parameter": 1})
+
+
+# --------------------------------------------------------------------------- #
+# samplers must propose things their own geometry can build
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("gen", GENERATORS, ids=IDS)
+def test_a_sampler_proposes_buildable_designs(gen: Generator) -> None:
+    """A high rejection rate means parameters drawn independently of each other.
+
+    Every instance found so far was the same shape: a tab wider than the panel
+    it is cut into, a recess deeper than the material, a rest longer than the
+    tray, a hole narrower than the cutter, a scallop wider than the flat it
+    bites into.  Each is invisible design by design and obvious in aggregate,
+    so it is measured rather than left to turn up again.
+    """
+    made = attempts = 0
+    for seed in (1, 7, 31, 42, 2026, 11, 99):
+        run = gen.sample_variants(10, seed=seed)
+        made += len(run.designs)
+        attempts += run.attempts
+    assert made == 70, f"{gen.niche} produced {made} of 70 requested"
+    rejected = (attempts - made) / attempts
+    assert rejected <= 0.12, (
+        f"{gen.niche} rejected {rejected:.0%} of what it proposed "
+        f"({attempts - made} of {attempts})"
+    )
+
+
+def test_no_niche_wastes_much_of_what_it_draws() -> None:
+    """The whole registry, so one niche cannot hide behind the others."""
+    made = attempts = 0
+    for gen in GENERATORS:
+        for seed in (1, 31, 99):
+            run = gen.sample_variants(10, seed=seed)
+            made += len(run.designs)
+            attempts += run.attempts
+    assert (attempts - made) / attempts <= 0.06

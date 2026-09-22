@@ -127,6 +127,23 @@ class BoxParams(GeneratorParams):
             return self.floor_offset
         return max(self.thickness, self.min_wall)
 
+    def widest_floor_tab(self, box_length: float) -> float:
+        """The widest floor tab that fits along one side, in mm.
+
+        Solves the inequality :func:`_tab_spans` checks rather than restating
+        it, so the two cannot drift apart.  The shortest side governs, since
+        one tab width serves all four.
+
+        Args:
+            box_length: The box dimension along the side, in mm.
+
+        Returns:
+            The widest workable tab, which may be zero or less on a side too
+            short for this tab count.
+        """
+        span = box_length - 2.0 * (self.thickness + self.min_wall)
+        return (span - (self.floor_tabs - 1) * self.min_wall) / self.floor_tabs
+
     def fingers_for(self, length: float, override: int | None) -> int:
         """Finger count for an edge, odd so the pattern stays symmetric."""
         if override is not None:
@@ -514,17 +531,28 @@ class BoxGenerator(Generator):
         width = float(rng.randrange(90, 280, 10))
         depth = float(rng.randrange(70, min(int(width), 220) + 1, 10))
         height = float(rng.randrange(40, 140, 10))
+        tabs = rng.choice([2, 2, 3])
+        # The tab has to fit the shortest side it runs along, so the box is
+        # drawn first and the tab sized to it.  Drawn independently, one box
+        # in eight proposed three 22 mm tabs along a 70 mm side.
+        min_wall = max(4.0, thickness * 1.5)
+        probe = BoxParams(
+            width=width, depth=depth, height=height, floor_tabs=tabs,
+            thickness=thickness, mode="laser", min_wall=min_wall,
+        )
+        widest = min(probe.widest_floor_tab(width), probe.widest_floor_tab(depth))
+        tab_width = float(max(8.0, min(rng.randrange(14, 30, 2), widest * 0.85)))
         return BoxParams(
             width=width,
             depth=depth,
             height=height,
-            floor_tabs=rng.choice([2, 2, 3]),
-            floor_tab_width=float(rng.randrange(14, 30, 2)),
+            floor_tabs=tabs,
+            floor_tab_width=tab_width,
             lid=rng.choice([LidStyle.NONE, LidStyle.NONE, LidStyle.CAP]),
             mode="laser",
             thickness=thickness,
             kerf=rng.choice([0.1, 0.15, 0.2]),
             material=rng.choice(["birch ply", "poplar ply", "acrylic", "MDF"]),
-            min_wall=max(4.0, thickness * 1.5),
+            min_wall=min_wall,
             pocket_floor=1.0,
         )
