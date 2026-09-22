@@ -271,7 +271,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1036 tests
+python -m pytest          # 1040 tests
 ```
 
 ```
