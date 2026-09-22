@@ -343,18 +343,23 @@ class AshtrayGenerator(Generator):
     def sample_params(self, rng: random.Random, index: int) -> AshtrayParams:
         """Draw one cigar tray variant."""
         glass = float(rng.randrange(78, 106, 4))
-        well = rng.random() < 0.4
+        well = rng.random() < 0.55
         well_diameter = float(rng.randrange(45, 75, 5))
         rests = rng.choice([1, 2, 2, 3])
         rest_width = float(rng.randrange(18, 30, 2))
+        rest_length = float(rng.randrange(70, 120, 10))
         # Length follows from the contents: glass, optional well, then a rest
-        # long enough to be a rest, each separated by a full wall.
+        # long enough to be a rest, each separated by a full wall.  It follows
+        # *closely*: drawing a length independently of the contents is how a
+        # 450 mm tray ends up carrying one 60 mm rest and a lake of empty
+        # timber, which is what the contact sheet showed.  The slack below is
+        # breathing room, not a free hand.
         rim = 20.0
         needed = (
             rim + glass + (8.0 + well_diameter if well else 0.0) + 8.0
-            + MIN_REST_LENGTH + 15.0 + rim
+            + rest_length + 15.0 + rim
         )
-        length = float(max(math.ceil(needed / 10.0) * 10.0, rng.randrange(28, 52) * 10))
+        length = math.ceil(needed / 10.0) * 10.0 + float(rng.randrange(0, 7)) * 10.0
         aspect = rng.choice([GOLDEN, 1.5, 1.8, 2.0])
         width = max(
             round(length / aspect / 10.0) * 10.0,
@@ -375,7 +380,7 @@ class AshtrayGenerator(Generator):
             rests=rests,
             rest_width=rest_width,
             rest_depth=min(rng.choice([9.0, 11.0, 13.0]), thickness - 6.0),
-            rest_length=float(rng.randrange(60, 110, 10)),
+            rest_length=rest_length,
             engrave_border=rng.random() < 0.3,
             engrave_inset=float(rng.randrange(5, 12)),
             material=rng.choice(["walnut", "oak", "cherry", "mahogany", "maple"]),
