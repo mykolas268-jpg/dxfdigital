@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import random
 from enum import Enum
+from typing import Sequence
 
 from pydantic import Field, model_validator
 
@@ -100,6 +101,13 @@ class BoxParams(GeneratorParams):
         None, ge=0.0, le=60.0, description="floor height above the bottom edge in mm"
     )
     floor_tabs: int = Field(2, ge=1, le=6, description="floor tabs per side")
+    columns: int = Field(
+        1, ge=1, le=6, description="compartments across the width"
+    )
+    rows: int = Field(1, ge=1, le=6, description="compartments across the depth")
+    divider_tabs: int = Field(
+        2, ge=1, le=4, description="tabs holding each divider into its walls"
+    )
     floor_tab_width: float = Field(
         20.0, ge=8.0, le=60.0, description="floor tab width in mm"
     )
@@ -329,6 +337,203 @@ def _floor(params: BoxParams) -> Part:
     return Part(name="floor", outline=geo.dedupe(ring), labels=labels)
 
 
+def _divided(params: BoxParams) -> bool:
+    """Whether this box has any dividers in it."""
+    return params.columns > 1 or params.rows > 1
+
+
+def divider_positions(params: BoxParams) -> tuple[list[float], list[float]]:
+    """Where the dividers stand, in box coordinates.
+
+    A divider's position is the centre of its thickness, measured from the
+    outside of the box, so the walls and the assembly drawing can both place
+    it from the same number.
+
+    Args:
+        params: Box parameters.
+
+    Returns:
+        ``(column_x, row_y)`` - the x of each divider that splits the width,
+        and the y of each that splits the depth.  Either may be empty.
+    """
+    thickness = params.thickness
+    inner_w = params.width - 2.0 * thickness
+    inner_d = params.depth - 2.0 * thickness
+    columns = [
+        thickness + inner_w * index / params.columns
+        for index in range(1, params.columns)
+    ]
+    rows = [
+        thickness + inner_d * index / params.rows for index in range(1, params.rows)
+    ]
+    return columns, rows
+
+
+def _divider_tab_spans(params: BoxParams) -> list[tuple[float, float]]:
+    """Where a divider's tabs sit up its height, in divider coordinates.
+
+    The lowest tab clears the floor's own mortises, which sit at the floor
+    offset: two slots a couple of millimetres apart in the same wall is a
+    wall that snaps.
+
+    Args:
+        params: Box parameters.
+
+    Returns:
+        ``[(bottom, top), ...]`` measured from the divider's bottom edge.
+
+    Raises:
+        ValueError: If the tabs do not fit up the divider.
+    """
+    height = divider_height(params)
+    # Both ends carry the clearance too: the slot below is the floor's own
+    # mortise, grown half a clearance, and above is the wall's top edge.
+    margin = params.min_wall + params.clearance
+    span = height - 2.0 * margin
+    count = params.divider_tabs
+    # The wall left between two tabs is the gap less the fit clearance, since
+    # each mortise is drawn half a clearance proud at both ends.  Budgeting
+    # only min_wall here leaves min_wall minus clearance in the wall, which
+    # the validator rejects by exactly that margin.
+    between = params.min_wall + params.clearance
+    length = min(28.0, (span - (count - 1) * between) / count)
+    if length < 8.0:
+        raise ValueError(
+            f"a {height:.0f} mm divider has no room for {count} tabs; it needs "
+            f"about {count * (8.0 + params.min_wall) + 2 * margin:.0f} mm of height"
+        )
+    # Divided by count - 1: n tabs leave n-1 gaps between them, not n.  With
+    # count over the whole leftover the tabs bunch up and leave half the wall
+    # they should, which the validator catches as a 2.2 mm web.
+    gap = max(between, (span - count * length) / (count - 1)) if count > 1 else 0.0
+    return [
+        (margin + index * (length + gap), margin + index * (length + gap) + length)
+        for index in range(count)
+    ]
+
+
+def divider_height(params: BoxParams) -> float:
+    """How tall a divider stands, in mm.
+
+    From the top of the floor to the top of the walls, so a divided box has
+    its compartments closed right up to the rim.
+
+    Args:
+        params: Box parameters.
+
+    Returns:
+        The height in mm.
+    """
+    return params.height - params.resolved_floor_offset() - params.thickness
+
+
+def _divider_wall_mortises(
+    params: BoxParams, positions: Sequence[float]
+) -> list[Ring]:
+    """Slots in a wall for the dividers that land on it.
+
+    Args:
+        params: Box parameters.
+        positions: Divider centres along this wall, in box coordinates.
+
+    Returns:
+        Closed rings in the wall's own coordinates, which match the box's
+        along the wall and measure height from the wall's bottom edge.
+    """
+    slop = params.clearance
+    width = params.thickness + slop
+    base = params.resolved_floor_offset() + params.thickness
+    rings: list[Ring] = []
+    for centre in positions:
+        for bottom, top in _divider_tab_spans(params):
+            rings.append(
+                geo.rect_ring(
+                    width,
+                    (top - bottom) + slop,
+                    centre - width / 2.0,
+                    base + bottom - slop / 2.0,
+                )
+            )
+    return rings
+
+
+def _divider_part(
+    params: BoxParams,
+    name: str,
+    box_length: float,
+    crossings: Sequence[float],
+    slot_from_top: bool,
+) -> Part:
+    """Build one divider: tabs at both ends, cross-lap slots where it meets
+    the dividers running the other way.
+
+    Args:
+        params: Box parameters.
+        name: Part name.
+        box_length: The box dimension this divider spans, in mm.
+        crossings: Positions of the dividers it crosses, in box coordinates.
+        slot_from_top: Whether its cross-lap slots are cut down from its top
+            edge.  The two directions must disagree, or they cannot interlock.
+
+    Returns:
+        The part.
+
+    Raises:
+        ValueError: If a cross-lap slot cuts the divider in two.
+    """
+    thickness = params.thickness
+    height = divider_height(params)
+    inner = box_length - 2.0 * thickness
+
+    ring: list[Point] = [(0.0, 0.0), (inner, 0.0)]
+    # Right edge, bottom to top, tabs pointing right into the wall.
+    for bottom, top in _divider_tab_spans(params):
+        ring.extend(
+            [(inner, bottom), (inner + thickness, bottom),
+             (inner + thickness, top), (inner, top)]
+        )
+    ring.extend([(inner, height), (0.0, height)])
+    # Left edge, top to bottom, tabs pointing left.
+    for bottom, top in reversed(_divider_tab_spans(params)):
+        ring.extend(
+            [(0.0, top), (-thickness, top), (-thickness, bottom), (0.0, bottom)]
+        )
+    panel = geo.polygon_from_ring(geo.dedupe(ring))
+
+    slot = params.machine().slot_width(thickness)
+    for centre in crossings:
+        # Crossings are given in box coordinates; the divider's own zero sits
+        # one thickness in from the box's.
+        local = centre - thickness
+        y0 = height / 2.0 if slot_from_top else -1.0
+        notch = geo.rect_ring(slot, height / 2.0 + 1.0, local - slot / 2.0, y0)
+        panel = panel.difference(geo.polygon_from_ring(notch))
+        if panel.is_empty or panel.geom_type != "Polygon":
+            raise ValueError(
+                f"a cross-lap slot cut the {name} divider in two; the "
+                f"compartments are too small for this material"
+            )
+    return Part(name=name, outline=geo.ensure_ccw(geo.dedupe(list(panel.exterior.coords))))
+
+
+def _divider_parts(params: BoxParams) -> list[Part]:
+    """Every divider panel, or none when the box is undivided."""
+    columns, rows = divider_positions(params)
+    parts: list[Part] = []
+    # A divider splitting the width spans the depth, and vice versa.  The two
+    # directions take their cross-lap slots from opposite edges so they can be
+    # dropped into each other.
+    for index, _x in enumerate(columns, 1):
+        parts.append(
+            _divider_part(params, f"divider-col-{index}", params.depth, rows, True)
+        )
+    for index, _y in enumerate(rows, 1):
+        parts.append(
+            _divider_part(params, f"divider-row-{index}", params.width, columns, False)
+        )
+    return parts
+
+
 def _lid_parts(params: BoxParams) -> list[Part]:
     """Build the two lid plates, if a lid was asked for."""
     if params.lid is LidStyle.NONE:
@@ -369,6 +574,19 @@ def _assembly(params: BoxParams) -> Assembly:
         Placement("left", Plane.SIDE, (0.0, 0.0, 0.0)),
         Placement("right", Plane.SIDE, (width - thickness, 0.0, 0.0)),
     ]
+    columns, rows = divider_positions(params)
+    base = params.resolved_floor_offset() + thickness
+    half = thickness / 2.0
+    # A divider's own zero sits one thickness in from the box's, because its
+    # tabs reach back out through the walls to reach it.
+    for index, x in enumerate(columns, 1):
+        placements.append(
+            Placement(f"divider-col-{index}", Plane.SIDE, (x - half, thickness, base))
+        )
+    for index, y in enumerate(rows, 1):
+        placements.append(
+            Placement(f"divider-row-{index}", Plane.FRONT, (thickness, y - half, base))
+        )
     if params.lid is not LidStyle.NONE:
         clearance = params.lid_clearance
         placements += [
@@ -379,7 +597,13 @@ def _assembly(params: BoxParams) -> Assembly:
             ),
             Placement("lid-top", Plane.FLAT, (0.0, 0.0, height)),
         ]
+    compartments = params.columns * params.rows
     caption = f"{width:g} x {depth:g} x {height:g} mm box"
+    if compartments > 1:
+        caption = (
+            f"{width:g} x {depth:g} x {height:g} mm box, "
+            f"{params.columns} x {params.rows} compartments"
+        )
     if params.lid is not LidStyle.NONE:
         caption = (
             f"{width:g} x {depth:g} mm box, {height:g} mm body and its lid on top"
@@ -416,28 +640,39 @@ class BoxGenerator(Generator):
         front = _panel(params.width, params.height, thickness, True, True, long_fingers)
         side = _panel(params.depth, params.height, thickness, False, False, short_fingers)
 
+        # A divider splitting the width spans the depth, so its tabs come out
+        # through the front and back walls; the front and back walls run along
+        # the width, so that is where their slots sit.
+        columns, rows = divider_positions(params)
+        long_wall_slots = _divider_wall_mortises(params, columns)
+        short_wall_slots = _divider_wall_mortises(params, rows)
         parts = [
             Part(
                 name="front",
                 outline=list(front),
-                holes=_floor_mortises(params, params.width, params.floor_tabs),
+                holes=_floor_mortises(params, params.width, params.floor_tabs)
+                + long_wall_slots,
             ),
             Part(
                 name="back",
                 outline=list(front),
-                holes=_floor_mortises(params, params.width, params.floor_tabs),
+                holes=_floor_mortises(params, params.width, params.floor_tabs)
+                + long_wall_slots,
             ),
             Part(
                 name="left",
                 outline=list(side),
-                holes=_floor_mortises(params, params.depth, params.floor_tabs),
+                holes=_floor_mortises(params, params.depth, params.floor_tabs)
+                + short_wall_slots,
             ),
             Part(
                 name="right",
                 outline=list(side),
-                holes=_floor_mortises(params, params.depth, params.floor_tabs),
+                holes=_floor_mortises(params, params.depth, params.floor_tabs)
+                + short_wall_slots,
             ),
             _floor(params),
+            *_divider_parts(params),
             *_lid_parts(params),
         ]
         parts = apply_kerf(parts, params)
@@ -448,12 +683,20 @@ class BoxGenerator(Generator):
         design = Design(
             slug=slugify(
                 "box", f"{params.width:g}x{params.depth:g}x{params.height:g}",
-                f"t{params.thickness:g}", f"lid-{params.lid.value}",
+                f"t{params.thickness:g}",
+                f"{params.columns}x{params.rows}" if _divided(params) else "open",
+                f"lid-{params.lid.value}",
                 params.mode.value,
             ),
             name=(
-                f"Finger-jointed Box {params.width:g} x {params.depth:g} x "
-                f"{params.height:g} mm"
+                (
+                    f"Finger-jointed Compartment Box {params.width:g} x "
+                    f"{params.depth:g} x {params.height:g} mm, "
+                    f"{params.columns * params.rows} compartments"
+                    if _divided(params)
+                    else f"Finger-jointed Box {params.width:g} x {params.depth:g} x "
+                    f"{params.height:g} mm"
+                )
                 + (" with lid" if params.lid is not LidStyle.NONE else "")
             ),
             niche=self.niche,
@@ -512,6 +755,18 @@ class BoxGenerator(Generator):
                 f"Kerf compensated at {params.kerf:g} mm across the whole part. "
                 f"Cut one corner as a test if your machine runs wider."
             )
+        if _divided(params):
+            compartment = params.inside()
+            notes.append(
+                f"The {params.columns * params.rows} compartments come out at "
+                f"about {compartment[0] / params.columns:.0f} x "
+                f"{compartment[1] / params.rows:.0f} mm each."
+            )
+            notes.append(
+                "Drop the dividers in after the floor. The ones running each "
+                "way half-lap into each other, so start them together and "
+                "press them down as one."
+            )
         if params.lid is not LidStyle.NONE:
             notes.append(
                 f"The {params.height:g} mm height is the body. The lid sits on "
@@ -529,6 +784,9 @@ class BoxGenerator(Generator):
         """Draw one box variant."""
         thickness = rng.choice([3.0, 3.0, 4.0, 6.0])
         width = float(rng.randrange(90, 280, 10))
+        # A third of boxes are divided, because a compartment box is a
+        # different product rather than a variation on the plain one.
+        divided = rng.random() < 0.34
         depth = float(rng.randrange(70, min(int(width), 220) + 1, 10))
         height = float(rng.randrange(40, 140, 10))
         tabs = rng.choice([2, 2, 3])
@@ -541,6 +799,23 @@ class BoxGenerator(Generator):
             thickness=thickness, mode="laser", min_wall=min_wall,
         )
         widest = min(probe.widest_floor_tab(width), probe.widest_floor_tab(depth))
+        # Compartments must stay big enough to put something in, so the
+        # divider count follows the box rather than being drawn beside it.
+        columns = rows = 1
+        if divided:
+            inner_w = width - 2.0 * thickness
+            inner_d = depth - 2.0 * thickness
+            columns = max(1, min(4, int(inner_w // 55.0)))
+            rows = max(1, min(3, int(inner_d // 55.0)))
+            if columns * rows == 1:
+                columns = 2 if inner_w >= inner_d else 1
+                rows = 1 if columns == 2 else 2
+            elif rng.random() < 0.45:
+                rows = 1
+        # A short divider has room for one tab, not two.  Derived from the
+        # height for the same reason every other count here is.
+        standing = height - max(thickness, min_wall) - thickness
+        divider_tabs = 2 if standing >= 2 * (8.0 + min_wall) + 2 * min_wall else 1
         tab_width = float(max(8.0, min(rng.randrange(14, 30, 2), widest * 0.85)))
         return BoxParams(
             width=width,
@@ -548,6 +823,9 @@ class BoxGenerator(Generator):
             height=height,
             floor_tabs=tabs,
             floor_tab_width=tab_width,
+            columns=columns,
+            rows=rows,
+            divider_tabs=divider_tabs,
             lid=rng.choice([LidStyle.NONE, LidStyle.NONE, LidStyle.CAP]),
             mode="laser",
             thickness=thickness,

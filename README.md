@@ -103,7 +103,7 @@ guess.
 | `coasters` | Coaster sets in five shapes with engraved patterns and a holder | router |
 | `ashtrays` | Cigar and whiskey trays with a glass recess, cigar rests and an ash well | router |
 | `stands` | Three-part slot-together phone and tablet docks in four back profiles, no glue | router |
-| `boxes` | Finger-jointed boxes with a tabbed floor and an optional lid | laser |
+| `boxes` | Finger-jointed boxes, plain or with cross-lapped compartments, tabbed floor, optional lid | laser |
 | `furniture` | Flat-pack slot-together shelves and tables, nested onto sheet stock | router |
 | `seasonal` | Themed plaques, shaped trays and coaster sets from parametric curves | either |
 | `ornaments` | Ornaments and keychains from parametric shapes, nested as a set | laser |
@@ -271,7 +271,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1019 tests
+python -m pytest          # 1036 tests
 ```
 
 ```
@@ -308,8 +308,8 @@ Stated plainly, because finding these out at the machine is expensive.
   designs whose parts differ most in height.
 - **Furniture joints are friction fits.** There is no wedge, cam or captive-nut
   geometry, so a bookcase relies on the fit and, ideally, glue.
-- **Boxes come in one form**: a finger-jointed open box with an optional
-  lift-off lid. No hinges, no dividers, no drawers.
+- **Boxes have no hinges or drawers.** A plain or compartmented open box with
+  an optional lift-off lid is the whole range.
 - **The pumpkin's lobes are engraved** rather than cut into the silhouette.
   That is the right call — modulating the profile makes it read as a flower —
   but it means the silhouette alone is a rounded rectangle.
