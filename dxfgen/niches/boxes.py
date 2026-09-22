@@ -364,7 +364,9 @@ def _assembly(params: BoxParams) -> Assembly:
         ]
     caption = f"{width:g} x {depth:g} x {height:g} mm box"
     if params.lid is not LidStyle.NONE:
-        caption += " with its lid on"
+        caption = (
+            f"{width:g} x {depth:g} mm box, {height:g} mm body and its lid on top"
+        )
     return Assembly(tuple(placements), caption)
 
 
@@ -492,6 +494,12 @@ class BoxGenerator(Generator):
             notes.append(
                 f"Kerf compensated at {params.kerf:g} mm across the whole part. "
                 f"Cut one corner as a test if your machine runs wider."
+            )
+        if params.lid is not LidStyle.NONE:
+            notes.append(
+                f"The {params.height:g} mm height is the body. The lid sits on "
+                f"top of the walls, so with it on the box stands "
+                f"{params.height + params.thickness:g} mm."
             )
         if params.lid is LidStyle.CAP:
             notes.append(
