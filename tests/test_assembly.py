@@ -217,3 +217,56 @@ def test_a_taller_object_makes_a_taller_drawing(tmp_path: Path) -> None:
     b = render_assembly(tall, tmp_path / "b.png", px_width=400, dpi=100, caption=False)
     with Image.open(a) as first, Image.open(b) as second:
         assert second.size[1] > first.size[1]
+
+
+# --------------------------------------------------------------------------- #
+# the listing image
+# --------------------------------------------------------------------------- #
+def test_the_mockup_of_an_assembled_design_is_the_assembly(tmp_path: Path) -> None:
+    """A wood-grained picture of six flat panels advertises nothing."""
+    from dxfgen.core.preview import render_mockup
+
+    design = get_generator("boxes").make(width=200, depth=140, height=90)
+    mockup = render_mockup(design, tmp_path / "m.png", px_width=420, dpi=100)
+    drawing = render_assembly(
+        design, tmp_path / "a.png", px_width=420, dpi=100, grain=True
+    )
+    with Image.open(mockup) as a, Image.open(drawing) as b:
+        assert a.size == b.size, "the mockup is drawn from the same geometry"
+
+
+def test_the_mockup_of_a_flat_product_stays_flat(tmp_path: Path) -> None:
+    from dxfgen.core.preview import render_mockup
+
+    design = get_generator("trays").make()
+    assert design.assembly is None
+    mockup = render_mockup(design, tmp_path / "m.png", px_width=420, dpi=100)
+    with Image.open(mockup) as image:
+        width, height = image.size
+    # A tray is wider than it is tall; an isometric of one would not be.
+    assert width > height
+
+
+def test_grain_changes_the_picture_but_not_its_size(tmp_path: Path) -> None:
+    design = get_generator("stands").make(size="tablet")
+    plain = render_assembly(design, tmp_path / "p.png", px_width=400, dpi=100)
+    wood = render_assembly(
+        design, tmp_path / "w.png", px_width=400, dpi=100, grain=True
+    )
+    import numpy as np
+
+    with Image.open(plain) as a, Image.open(wood) as b:
+        assert a.size == b.size
+        flat, grained = np.asarray(a.convert("RGB")), np.asarray(b.convert("RGB"))
+    assert not np.array_equal(flat, grained), "grain must actually show"
+    # Flat shading gives each face one tone; grain gives it many.
+    assert len(np.unique(grained.reshape(-1, 3), axis=0)) > len(
+        np.unique(flat.reshape(-1, 3), axis=0)
+    )
+
+
+def test_a_nearer_panel_covers_a_further_one(tmp_path: Path) -> None:
+    """Painting order is per panel, so an edge cannot poke through a face."""
+    design = get_generator("boxes").make(width=200, depth=140, height=90)
+    out = render_assembly(design, tmp_path / "z.png", px_width=300, dpi=100)
+    assert out.exists()

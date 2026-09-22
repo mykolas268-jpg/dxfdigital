@@ -131,7 +131,7 @@ One design, into `output/<niche>/<slug>/`:
 | `<slug>.svg` | SVG in millimetres, for LightBurn and friends |
 | `<slug>_template.pdf` | 1:1 print template, tiled with alignment crosses if it does not fit one sheet |
 | `<slug>_preview.png` | what the file contains, layer by layer |
-| `<slug>_mockup.png` | what it looks like cut, wood-grained, for a listing |
+| `<slug>_mockup.png` | the listing image: wood-grained, and drawn assembled where the design assembles |
 | `<slug>_assembly.png` | what it looks like put together — boxes, docks and furniture only |
 | `README.txt` | material, depths per layer, cutting order, licence summary |
 
@@ -295,10 +295,12 @@ the CLI all come from the base class.
 
 Stated plainly, because finding these out at the machine is expensive.
 
-- **Mockups are flat top views** with a procedural wood texture and a drawn
-  shadow. They are not 3D renders, and a recess reads as a tint rather than as
-  depth. The assembly drawing is a separate, flat-shaded isometric: no
-  perspective, no shadows, no hidden-surface solver.
+- **Mockups are not renders.** A flat product gets a wood-textured top view,
+  where a recess reads as a tint rather than as depth. An assembled one gets
+  the isometric with grain on it: no perspective, no shadows, no
+  hidden-surface solver, and one grain field across the whole drawing rather
+  than one per panel — so on an upright the grain runs in the projected
+  direction rather than along the panel.
 - **Assemblies must be orthogonal.** Panels lie in one of three planes at
   right angles. Anything mitred, hinged or curved cannot be described, and a
   generator that cannot describe itself simply carries no assembly.

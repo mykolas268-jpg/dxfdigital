@@ -426,6 +426,10 @@ def render_mockup(
 ) -> Path:
     """Render a wood-textured view of a design, for use as a listing image.
 
+    A design that assembles into something is drawn assembled, because a
+    wood-grained picture of six flat panels advertises nothing.  A flat
+    product is drawn flat, because for it the cut file already is the object.
+
     Args:
         design: The design to draw.
         path: Destination PNG path; parent directories are created.
@@ -436,6 +440,16 @@ def render_mockup(
     Returns:
         The written path.
     """
+    if design.assembly is not None:
+        return render_assembly(
+            design,
+            path,
+            px_width=px_width,
+            dpi=dpi,
+            background=_MOCKUP_BACKGROUND,
+            grain=True,
+            texture_px=texture_px,
+        )
     placed = design.normalized()
     bbox = placed.bbox()
     width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -601,6 +615,8 @@ def render_assembly(
     margin_frac: float = 0.06,
     caption: bool = True,
     background: str = _ASSEMBLY_BACKGROUND,
+    grain: bool = False,
+    texture_px: int = 900,
 ) -> Path:
     """Draw the assembled object in isometric projection.
 
@@ -621,6 +637,13 @@ def render_assembly(
         caption: Draw the assembled dimensions underneath.
         background: Page colour; a contact sheet passes its own so the tiles
             do not sit in grey boxes.
+        grain: Fill the faces with wood texture instead of flat tone, for a
+            listing image.  The grain is one field across the whole drawing
+            rather than one per panel, so it runs in the projected direction
+            on an upright rather than along the panel's own length.  At
+            listing size it reads as one board's worth of timber, which is
+            what it is; it is not a claim about grain direction.
+        texture_px: Resolution of that texture field.
 
     Returns:
         The written path.
@@ -670,25 +693,51 @@ def render_assembly(
 
     base = _palette_for(placed.material)[0]
     line = max(0.4, (px_width / dpi) * 0.13)
-    for _depth, placement, near, far, quads, holes3 in panels:
-        face = _shaded(base, _ASSEMBLY_SHADE[placement.plane])
+    wood = None
+    extent = (x0, x1, y0, y1)
+    if grain:
+        aspect = (y1 - y0) / (x1 - x0) if x1 > x0 else 1.0
+        wood = _wood_image(
+            (max(64, int(texture_px * aspect)), texture_px),
+            extent,
+            placed.material,
+            _seed_of(placed.slug),
+        )
+
+    for index, (_depth, placement, near, far, quads, holes3) in enumerate(panels):
+        shade = _ASSEMBLY_SHADE[placement.plane]
+        face = _shaded(base, shade)
         edge = _shaded(face, _EDGE_SHADE)
+        # Every panel is painted in one z band so a nearer panel covers a
+        # further one whole, edges included.
+        depth_z = 1 + index * 3
         ax.add_patch(
-            PathPatch(_iso_path(far), facecolor=edge, edgecolor="none", zorder=1)
+            PathPatch(_iso_path(far), facecolor=edge, edgecolor="none", zorder=depth_z)
         )
         for quad in quads:
             ax.add_patch(
-                PathPatch(_iso_path(quad), facecolor=edge, edgecolor="none", zorder=2)
+                PathPatch(
+                    _iso_path(quad), facecolor=edge, edgecolor="none", zorder=depth_z + 1
+                )
             )
-        ax.add_patch(
-            PathPatch(
-                _iso_path(near, holes3),
-                facecolor=face,
-                edgecolor=_ASSEMBLY_LINE,
-                linewidth=line,
-                zorder=3,
-            )
+        front_face = PathPatch(
+            _iso_path(near, holes3),
+            facecolor="none" if wood is not None else face,
+            edgecolor=_ASSEMBLY_LINE,
+            linewidth=line,
+            zorder=depth_z + 2,
         )
+        ax.add_patch(front_face)
+        if wood is not None:
+            painted = ax.imshow(
+                np.clip(wood * shade, 0.0, 1.0),
+                extent=extent,
+                origin="lower",
+                interpolation="bilinear",
+                zorder=depth_z + 2,
+            )
+            painted.set_clip_path(front_face)
+            front_face.set_zorder(depth_z + 2.5)
 
     if caption:
         width, depth, height = assembled_size(placed)
