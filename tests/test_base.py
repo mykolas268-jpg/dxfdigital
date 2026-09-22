@@ -259,3 +259,70 @@ def test_registry_refuses_duplicate_niches() -> None:
 
     with pytest.raises(ValueError, match="already registered"):
         niches.register(niches.get_generator("trays"))
+
+
+# --------------------------------------------------------------------------- #
+# what a variant run reports about what it threw away
+# --------------------------------------------------------------------------- #
+def test_a_run_reports_the_designs_it_kept(gen: SquareGenerator) -> None:
+    run = gen.sample_variants(4, seed=21)
+    assert [d.slug for d in run.designs] == [d.slug for d in run.designs]
+    assert len(run.designs) == 4
+    assert run.requested == 4
+    assert run.short == 0
+    assert run.seed == 21
+
+
+def test_variants_is_just_the_designs_of_a_run(gen: SquareGenerator) -> None:
+    assert [d.slug for d in gen.variants(5, seed=21)] == [
+        d.slug for d in gen.sample_variants(5, seed=21).designs
+    ]
+
+
+def test_a_run_records_a_variant_that_could_not_be_built() -> None:
+    """A parameter set that raises must carry its message into the report."""
+    generator = SquareGenerator()
+    generator.sample_params = lambda rng, index: SquareParams(  # type: ignore[assignment]
+        side=150.0 + index, unbuildable=index % 2 == 0
+    )
+    run = generator.sample_variants(4, seed=3)
+    builds = [skip for skip in run.skips if skip.stage == "build"]
+    assert len(builds) == 4, "every other attempt refuses to build"
+    assert all("cannot be built" in skip.reason for skip in builds)
+    assert all(skip.slug is None for skip in builds)
+    assert len(run.designs) == 4
+
+
+def test_a_run_records_a_repeat_as_a_duplicate(gen: SquareGenerator) -> None:
+    """Only 34 distinct sides exist, so asking for 30 must hit a repeat."""
+    run = gen.sample_variants(30, seed=3)
+    repeats = [skip for skip in run.skips if skip.stage == "duplicate"]
+    assert repeats
+    assert all(skip.slug for skip in repeats)
+
+
+def test_a_run_records_a_variant_that_failed_validation(gen: SquareGenerator) -> None:
+    monkey = SquareGenerator()
+    monkey.sample_params = lambda rng, index: SquareParams(  # type: ignore[assignment]
+        side=100.0 + index, bad_pocket=True
+    )
+    run = monkey.sample_variants(3, seed=1)
+    assert run.designs == []
+    assert len(run.skips) == 3 * 6, "every attempt is tried and every one recorded"
+    assert all(skip.stage == "validate" for skip in run.skips)
+    assert all(skip.slug for skip in run.skips)
+
+
+def test_every_skip_names_an_attempt_that_happened(gen: SquareGenerator) -> None:
+    run = gen.sample_variants(25, seed=3)
+    assert all(0 <= skip.index < run.attempts for skip in run.skips)
+    assert sum(run.skip_counts().values()) == len(run.skips)
+    assert len(run.designs) + len(run.skips) == run.attempts
+
+
+def test_a_run_that_cannot_fill_its_count_says_how_short_it_is(
+    gen: SquareGenerator,
+) -> None:
+    run = gen.sample_variants(40, seed=3, attempt_factor=1)
+    assert run.attempts <= 40
+    assert run.short == run.requested - len(run.designs) > 0

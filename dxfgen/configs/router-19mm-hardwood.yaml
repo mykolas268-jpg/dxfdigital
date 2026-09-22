@@ -1,0 +1,12 @@
+# Boards and trays in 3/4" hardwood, the usual serving-board stock.
+#
+# Use with:  dxfgen make boards --preset router-19mm-hardwood
+name: Router, 19 mm hardwood
+params:
+  mode: router
+  material: oak
+  thickness: 19.0
+  tool_diameter: 6.35
+  clearance: 0.2
+  min_wall: 10.0           # a board is handled wet; give the walls more meat
+  pocket_floor: 6.0

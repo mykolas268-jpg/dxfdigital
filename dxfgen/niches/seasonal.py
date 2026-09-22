@@ -262,21 +262,30 @@ class SeasonalGenerator(Generator):
         return notes
 
     def sample_params(self, rng: random.Random, index: int) -> SeasonalParams:
-        """Draw one seasonal variant."""
-        form = rng.choice(
-            [SeasonalForm.PLAQUE, SeasonalForm.PLAQUE, SeasonalForm.TRAY, SeasonalForm.COASTER]
-        )
-        laser = rng.random() < 0.35
+        """Draw one seasonal variant.
+
+        The shape is taken in strict rotation rather than drawn at random.
+        Twenty independent draws from nine shapes gives five pumpkins and one
+        tree, and a buyer looking at the contact sheet counts the pumpkins: a
+        seasonal bundle has to cover its occasions.  Rotating on the variant
+        index guarantees the first nine variants are one of each.
+
+        The rotation deliberately ignores ``rng``.  Each variant is seeded
+        from ``(seed, index)`` alone, so a "random offset" drawn here would be
+        a fresh uniform draw every time and no rotation at all - which is
+        exactly the bug this replaced.  The seed still varies everything else:
+        form, size, material, machine and decoration.
+        """
+        names = shape_names()
+        shape = names[index % len(names)]
+        forms = [SeasonalForm.PLAQUE, SeasonalForm.PLAQUE, SeasonalForm.TRAY,
+                 SeasonalForm.COASTER]
         # A snowflake has no rim to sink a recess into, and its arms are finer
-        # than any router bit.
-        shape = rng.choice(
-            [
-                n
-                for n in shape_names()
-                if (laser or n != "snowflake")
-                and not (form is SeasonalForm.TRAY and n == "snowflake")
-            ]
-        )
+        # than any router bit, so it is laser-only and never a tray.
+        if shape == "snowflake":
+            forms = [f for f in forms if f is not SeasonalForm.TRAY]
+        form = rng.choice(forms)
+        laser = True if shape == "snowflake" else rng.random() < 0.35
         low, high = _FORM_WIDTH[form]
         width = float(rng.randrange(int(low), int(high), 10))
         thickness = 3.0 if laser else rng.choice([19.0, 19.0, 25.0])

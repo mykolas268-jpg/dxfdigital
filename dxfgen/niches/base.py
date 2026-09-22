@@ -44,6 +44,8 @@ __all__ = [
     "GeneratorParams",
     "Generator",
     "ParamDoc",
+    "Skip",
+    "VariantRun",
     "STOCK_SIZES",
     "smallest_stock",
     "apply_kerf",
@@ -328,6 +330,56 @@ def cutting_order_for(design: Design) -> list[str]:
     return steps
 
 
+@dataclass(frozen=True)
+class Skip:
+    """One rejected variant, kept so a bundle can report why it is short.
+
+    Attributes:
+        index: The variant index that was attempted.
+        slug: The design's slug, when it got far enough to have one.
+        reason: Why it was rejected.
+        stage: ``"build"`` for parameters that could not produce geometry,
+            ``"validate"`` for geometry that failed the manufacturing rules,
+            ``"duplicate"`` for a repeat of a design already produced.
+    """
+
+    index: int
+    slug: str | None
+    reason: str
+    stage: str
+
+
+@dataclass(frozen=True)
+class VariantRun:
+    """The outcome of asking a generator for a batch of variants.
+
+    Attributes:
+        designs: The variants that built and validated.
+        skips: Every rejection, in the order it happened.
+        requested: How many variants were asked for.
+        attempts: How many parameter samples were tried.
+        seed: The master seed used.
+    """
+
+    designs: list[Design]
+    skips: list[Skip]
+    requested: int
+    attempts: int
+    seed: int
+
+    @property
+    def short(self) -> int:
+        """How many fewer variants were produced than were requested."""
+        return max(0, self.requested - len(self.designs))
+
+    def skip_counts(self) -> dict[str, int]:
+        """Rejections per stage, for a one-line summary."""
+        counts: dict[str, int] = {}
+        for skip in self.skips:
+            counts[skip.stage] = counts.get(skip.stage, 0) + 1
+        return counts
+
+
 class GeneratorParams(BaseModel):
     """Parameters common to every niche.
 
@@ -511,10 +563,8 @@ class Generator(ABC):
     ) -> list[Design]:
         """Generate ``count`` distinct, validated variants.
 
-        Variant *i* depends only on ``(seed, i)``, so the same seed reproduces
-        the same designs and raising ``count`` never disturbs earlier ones.
-        Anything that fails to build or fails validation is skipped with its
-        reason logged, and never exported.
+        A thin wrapper over :meth:`sample_variants` for callers that only want
+        the designs.  See that method for the guarantees.
 
         Args:
             count: How many valid variants are wanted.
@@ -525,8 +575,39 @@ class Generator(ABC):
                 before giving up.
 
         Returns:
-            Up to ``count`` designs.  Fewer means the parameter space could
-            not produce more valid, distinct results.
+            Up to ``count`` designs.
+
+        Raises:
+            ValueError: If ``count`` is not positive.
+        """
+        return self.sample_variants(count, seed, config, attempt_factor).designs
+
+    def sample_variants(
+        self,
+        count: int,
+        seed: int = 0,
+        config: ValidationConfig | None = None,
+        attempt_factor: int = 6,
+    ) -> VariantRun:
+        """Generate ``count`` distinct, validated variants and report the misses.
+
+        Variant *i* depends only on ``(seed, i)``, so the same seed reproduces
+        the same designs and raising ``count`` never disturbs earlier ones.
+        Anything that fails to build or fails validation is skipped with its
+        reason recorded, and never exported.
+
+        Args:
+            count: How many valid variants are wanted.
+            seed: Master seed.
+            config: Validator limits; defaults to those implied by each
+                variant's own parameters.
+            attempt_factor: How many samples per requested variant to try
+                before giving up.
+
+        Returns:
+            A :class:`VariantRun` holding the designs and every rejection.
+            Fewer designs than requested means the parameter space could not
+            produce more valid, distinct results.
 
         Raises:
             ValueError: If ``count`` is not positive.
@@ -534,6 +615,7 @@ class Generator(ABC):
         if count < 1:
             raise ValueError(f"count must be >= 1, got {count}")
         designs: list[Design] = []
+        skips: list[Skip] = []
         seen: set[str] = set()
         index = 0
         limit = count * max(1, attempt_factor)
@@ -544,12 +626,18 @@ class Generator(ABC):
                 params = self.sample_params(rng, current)
                 design = self._finish(self.generate(params), params)
             except (ValueError, ValidationError) as exc:
-                log.info("%s: variant %d skipped, %s", self.niche, current, exc)
+                reason = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+                skips.append(Skip(current, None, reason, "build"))
+                log.info("%s: variant %d skipped, %s", self.niche, current, reason)
                 continue
             if design.slug in seen:
+                skips.append(
+                    Skip(current, design.slug, "duplicate of an earlier variant", "duplicate")
+                )
                 continue
             report = self.check(design, config)
             if not report.ok:
+                skips.append(Skip(current, design.slug, report.reason(), "validate"))
                 log.info(
                     "%s: variant %d (%s) skipped, %s",
                     self.niche,
@@ -568,7 +656,13 @@ class Generator(ABC):
                 count,
                 index,
             )
-        return designs
+        return VariantRun(
+            designs=designs,
+            skips=skips,
+            requested=count,
+            attempts=index,
+            seed=seed,
+        )
 
     def check(
         self, design: Design, config: ValidationConfig | None = None

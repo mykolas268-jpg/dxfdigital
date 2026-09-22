@@ -27,7 +27,7 @@ The checks fall into three groups:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from itertools import combinations
 from pathlib import Path
@@ -626,6 +626,66 @@ def validate_design(
     return report
 
 
+def _check_file_reachability(
+    report: Report,
+    ring: Sequence[Point],
+    layer: str,
+    machine: Machine,
+    cfg: ValidationConfig,
+) -> None:
+    """Can the given cutter reach every corner of one contour from a file?
+
+    Which side the material is on comes from the layer name, since a file has
+    no part structure to ask: a cut-inside or pocket contour is a void the
+    cutter works within, so its own corners must be reachable; a cut-outside
+    contour is a part the cutter works around, so its concave features must
+    admit the tool.
+
+    Args:
+        report: Where findings go.
+        ring: The closed contour.
+        layer: The layer it sits on.
+        machine: The machine to judge against.
+        cfg: The limits.
+    """
+    if machine.is_laser or not cfg.check_reachability:
+        return
+    inside = layer == CUT_INSIDE or parse_pocket_depth(layer) is not None
+    if not inside and layer != CUT_OUTSIDE:
+        return
+    poly = _safe_polygon(ring)
+    if poly.is_empty:
+        return
+    radius = machine.tool_radius
+    if inside:
+        zones = geo.unreachable_zones(poly, radius, cfg.max_corner_residual)
+        if zones:
+            where, _area, thickness = zones[0]
+            report.add(
+                "E_TOOL_UNREACHABLE",
+                Severity.ERROR,
+                f"a {machine.tool_diameter:g} mm cutter leaves "
+                f"{thickness:.2f} mm of material in {len(zones)} corner(s) on "
+                f"{layer} (max allowed {cfg.max_corner_residual:g} mm); this "
+                f"file needs a cutter of {radius * 2:.2f} mm or less, or "
+                f"dogbone relief",
+                location=where,
+            )
+        return
+    zones = geo.excess_zones(poly, radius, cfg.max_corner_residual)
+    if zones:
+        where, _area, thickness = zones[0]
+        report.add(
+            "E_PROFILE_TOO_TIGHT",
+            Severity.ERROR,
+            f"the profile on {layer} has {len(zones)} concave feature(s) a "
+            f"{machine.tool_diameter:g} mm cutter cannot enter, leaving "
+            f"{thickness:.2f} mm of material; it needs a cutter of "
+            f"{radius * 2:.2f} mm or less",
+            location=where,
+        )
+
+
 def validate_dxf_file(
     path: str | Path,
     machine: Machine | None = None,
@@ -640,24 +700,57 @@ def validate_dxf_file(
 
     Args:
         path: DXF file to inspect.
-        machine: Machine to judge feature sizes against; defaults to a 6.35 mm
-            router.
+        machine: Machine to judge feature sizes against.  If omitted it is
+            read from the file's own record of what it was written for, which
+            only files this tool wrote carry; failing that nothing is assumed
+            and the checks needing a cutter are skipped rather than run
+            against a guess.  Given one, in router mode every closed contour
+            on a cut layer is tested for corners the cutter cannot reach,
+            which is what makes ``--tool`` worth setting before trusting
+            somebody else's file.
         config: Limits to apply.
 
     Returns:
         A :class:`Report`.
+
+    Note:
+        A file on disk carries no part structure, so each contour is judged on
+        its own and its layer decides which side the material is on.  An
+        island standing inside a cutout is therefore analysed as if the cutout
+        were solid, which can over-report on a design that nests one contour
+        inside another on the same cut layer.  :func:`validate_design` knows
+        the structure and does not have that limitation.
     """
     import ezdxf
     from ezdxf.lldxf.const import DXFError
 
     cfg = config or ValidationConfig()
-    mach = machine or Machine()
     report = Report()
     try:
         doc = ezdxf.readfile(str(path))
     except (OSError, DXFError) as exc:
         report.add("E_UNREADABLE", Severity.ERROR, f"cannot read DXF: {exc}")
         return report
+
+    # A DXF has nowhere standard to record which machine it was cut for, and
+    # guessing wrong is worse than not guessing: router reachability rules
+    # applied to a laser file flag every finger joint as unmachinable.  So the
+    # machine comes from the caller, else from the file's own provenance if
+    # this tool wrote it, else nothing is assumed and the checks that need a
+    # cutter are skipped - and said to be skipped.
+    from .export_dxf import machine_from_document
+
+    mach = machine or machine_from_document(doc)
+    if mach is None:
+        report.add(
+            "INFO_NO_MACHINE",
+            Severity.INFO,
+            "the file does not record which machine it was cut for and none "
+            "was given, so cutter reachability was not checked; pass a tool "
+            "diameter to check it",
+        )
+        mach = Machine()
+        cfg = replace(cfg, check_reachability=False)
 
     auditor = doc.audit()
     for err in auditor.errors:
@@ -784,6 +877,7 @@ def validate_dxf_file(
                 f"closed polyline on {layer} intersects itself",
                 location=geo.centroid(ring),
             )
+        _check_file_reachability(report, ring, layer, mach, cfg)
         sig = _ring_signature(ring, cfg.duplicate_tolerance)
         if sig in seen:
             report.add(

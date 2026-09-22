@@ -147,6 +147,7 @@ def render_preview(
     dpi: int = 200,
     margin_mm: float | None = None,
     caption: bool = True,
+    labels: bool = True,
 ) -> Path:
     """Render a flat top view of a design.
 
@@ -161,6 +162,10 @@ def render_preview(
         dpi: Dots per inch used to size the figure.
         margin_mm: Blank margin around the design; defaults to 4% of its size.
         caption: Draw the overall dimensions under the design.
+        labels: Draw the design's own INFO-layer part labels.  They are real
+            content and belong in a preview a buyer inspects, but at contact
+            sheet size they render as an illegible smudge, so a thumbnail
+            turns them off.
 
     Returns:
         The written path.
@@ -247,7 +252,7 @@ def render_preview(
         # Annotation is part of what the file contains, so the preview shows
         # it.  The mockup does not: that is the finished object, which has no
         # INFO layer on it.
-        for label in part.labels:
+        for label in part.labels if labels else ():
             ax.text(
                 label.position[0],
                 label.position[1],

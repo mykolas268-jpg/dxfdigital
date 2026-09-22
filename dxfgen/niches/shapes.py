@@ -257,12 +257,22 @@ def tree(width: float, inside_radius: float = 0.0, tiers: int = 3) -> Ring:
     return _finish(geo.dedupe(right + left), inside_radius, width)
 
 
-def paw(width: float, inside_radius: float = 0.0, toes: int = 4) -> Ring:
-    """A pad with toes merged into it.
+#: Widest a single toe may be, as a fraction of the paw's overall width.
+#: Past this a three-toed paw reads as a clover rather than a print.
+MAX_TOE_WIDTH: float = 0.50
 
-    The toes overlap the pad so the result is a single contour.  Separate
-    toes would need separate parts, which is not what a paw-shaped coaster
-    is.
+
+def paw(width: float, inside_radius: float = 0.0, toes: int = 4) -> Ring:
+    """A paw print: a pad with toes splayed on an arc above it.
+
+    The toes must overlap the pad, because the result has to be one closed
+    contour that cuts as one piece.  Getting that overlap right is the whole
+    problem: sink the toes far into the pad and the notches between them
+    vanish, leaving something that reads as a flower; lift them clear and the
+    piece falls into five.  So each toe is dropped onto the pad's own top edge
+    and sunk a fixed, small amount into it, which keeps the notches as deep as
+    a single contour allows, and the inner pair is lifted above the outer pair
+    the way a real print splays.
 
     Args:
         width: Overall width in mm.
@@ -273,16 +283,36 @@ def paw(width: float, inside_radius: float = 0.0, toes: int = 4) -> Ring:
         A closed ring.
 
     Raises:
-        ValueError: On fewer than 3 toes.
+        ValueError: On fewer than 3 toes, or if the toes do not all merge with
+            the pad - which would mean shipping a design that falls apart on
+            the machine.
     """
     if toes < 3:
         raise ValueError(f"a paw needs at least 3 toes, got {toes}")
-    pad_w, pad_h, pad_cy, exponent = 1.40, 1.16, -0.12, 2.6
+    pad_w, pad_h, pad_cy, exponent = 1.10, 1.00, -0.16, 2.6
     a, b = pad_w / 2.0, pad_h / 2.0
-    pad = geo.superellipse_ring(pad_w, pad_h, exponent, 0.0, pad_cy, samples=200)
+    pad = geo.superellipse_ring(pad_w, pad_h, exponent, 0.0, pad_cy, samples=220)
     shapes = [geo.polygon_from_ring(pad)]
-    toe_w, toe_h = 0.40, 0.50
-    reach = a * 0.82
+
+    # Toes reach past the pad's own half width so the outer pair stands proud
+    # of it rather than merging into its side, but not so far that it loses
+    # contact.  Both conditions are one equation: the outermost toe's centre
+    # sits OVERHANG toe-widths outside the pad edge, and the toes are spread
+    # to leave a gap of a tenth of their pitch between neighbours.  Solving
+    # the two together, rather than picking a reach and hoping, is what keeps
+    # three, four and five toes all merging.
+    overhang, fill = 0.35, 0.90
+    reach = a / (1.0 - overhang * 2.0 * fill / (toes - 1))
+    toe_w = 2.0 * fill * reach / (toes - 1)
+    if toe_w > MAX_TOE_WIDTH:
+        toe_w = MAX_TOE_WIDTH
+        reach = a + overhang * toe_w
+    toe_h = toe_w * 1.32
+    # A real print splays: the outer toes ride lower than the inner ones.  The
+    # pad's own curvature does most of that, and the rest is a smaller bite
+    # into the pad for the inner toes - never so small that one floats free,
+    # which is the failure this whole shape is one bad number away from.
+    outer_sink, inner_sink = 0.10, 0.045
 
     def pad_top(x: float) -> float:
         """Top of the pad directly above ``x``, from the superellipse."""
@@ -290,15 +320,14 @@ def paw(width: float, inside_radius: float = 0.0, toes: int = 4) -> Ring:
         return pad_cy + b * (1.0 - ratio**exponent) ** (1.0 / exponent)
 
     for index in range(toes):
-        # Toes are spread across the pad and dropped onto its top edge, each
-        # sunk far enough into it to merge.  Placing them on an arc of their
-        # own and hoping it intersects the pad is how they end up floating.
         fraction = index / (toes - 1)
-        cx = reach * (1.0 - 2.0 * fraction)
-        cy = pad_top(cx) + toe_h * 0.34
+        offset = 1.0 - 2.0 * fraction
+        cx = reach * offset
+        sink = inner_sink + (outer_sink - inner_sink) * abs(offset)
+        cy = pad_top(cx) + toe_h / 2.0 - sink
         shapes.append(
             geo.polygon_from_ring(
-                geo.superellipse_ring(toe_w, toe_h, 2.3, cx, cy, samples=120)
+                geo.superellipse_ring(toe_w, toe_h, 2.3, cx, cy, samples=140)
             )
         )
     merged = unary_union(shapes)

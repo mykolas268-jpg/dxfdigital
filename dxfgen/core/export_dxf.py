@@ -25,11 +25,17 @@ from ezdxf import zoom
 from ezdxf.document import Drawing
 from ezdxf.enums import TextEntityAlignment
 
-from .design import Design
+from .design import Design, Machine, Mode
 from .layers import INFO, layer_def
 from .validate import Report, ValidationConfig, validate_design
 
 __all__ = [
+    "PROVENANCE_MODE",
+    "PROVENANCE_TOOL",
+    "PROVENANCE_KERF",
+    "PROVENANCE_THICKNESS",
+    "PROVENANCE_SLUG",
+    "machine_from_document",
     "DXF_VERSION",
     "build_document",
     "write_dxf",
@@ -95,6 +101,36 @@ def _prepare_layers(doc: Drawing, design: Design) -> None:
         layer.dxf.plot = 0 if not spec.machined else 1
 
 
+#: Header custom variables that record which machine a file was cut for.  A
+#: DXF has nowhere standard to say "this is laser work", so a checker reading
+#: the file back would otherwise have to assume, and assuming router rules on
+#: a laser file flags every finger joint.  Any CAD package ignores unknown
+#: custom variables, so this costs nothing to carry.
+PROVENANCE_MODE: str = "DXFGEN_MODE"
+PROVENANCE_TOOL: str = "DXFGEN_TOOL_DIAMETER"
+PROVENANCE_KERF: str = "DXFGEN_KERF"
+PROVENANCE_THICKNESS: str = "DXFGEN_THICKNESS"
+PROVENANCE_SLUG: str = "DXFGEN_DESIGN"
+
+
+def _write_provenance(doc: Drawing, design: Design) -> None:
+    """Record the machine settings the design was built for.
+
+    Args:
+        doc: The document being built.
+        design: The design being written.
+    """
+    machine = design.machine
+    for tag, value in (
+        (PROVENANCE_MODE, machine.mode.value),
+        (PROVENANCE_TOOL, f"{machine.tool_diameter:g}"),
+        (PROVENANCE_KERF, f"{machine.kerf:g}"),
+        (PROVENANCE_THICKNESS, f"{design.thickness:g}"),
+        (PROVENANCE_SLUG, design.slug),
+    ):
+        doc.header.custom_vars.append(tag, value)
+
+
 def build_document(design: Design) -> Drawing:
     """Build an in-memory DXF document from a design.
 
@@ -113,6 +149,7 @@ def build_document(design: Design) -> Drawing:
     # more table entries to choke on.
     doc = ezdxf.new(DXF_VERSION, setup=False)
     _prepare_header(doc)
+    _write_provenance(doc, design)
     _prepare_layers(doc, design)
     msp = doc.modelspace()
 
@@ -198,3 +235,29 @@ def audit_file(path: str | Path) -> tuple[list[str], list[str]]:
         [str(e) for e in auditor.errors],
         [str(f) for f in auditor.fixes],
     )
+
+
+def machine_from_document(doc: Drawing) -> Machine | None:
+    """Recover the machine a file was written for, if it says.
+
+    Only files this tool wrote carry the information; anything else returns
+    ``None`` so the caller can ask the operator rather than assume.
+
+    Args:
+        doc: A loaded DXF document.
+
+    Returns:
+        The machine, or ``None`` if the file does not record one or records
+        something unreadable.
+    """
+    custom = doc.header.custom_vars
+    mode_name = custom.get(PROVENANCE_MODE, "")
+    if not mode_name:
+        return None
+    try:
+        mode = Mode(mode_name.strip().lower())
+        tool = float(custom.get(PROVENANCE_TOOL, "") or Machine().tool_diameter)
+        kerf = float(custom.get(PROVENANCE_KERF, "") or Machine().kerf)
+    except (ValueError, TypeError):
+        return None
+    return Machine(mode=mode, tool_diameter=tool, kerf=kerf)

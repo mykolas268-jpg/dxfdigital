@@ -1,0 +1,13 @@
+# 3 mm birch ply on a 40-60 W CO2 laser. Kerf is measured, not guessed: cut a
+# 20 mm test square, measure it, and set kerf to (20 - measured).
+#
+# Use with:  dxfgen make boxes --preset laser-3mm-ply
+name: Laser, 3 mm birch plywood
+params:
+  mode: laser
+  material: 3 mm birch ply
+  thickness: 3.0
+  kerf: 0.15
+  clearance: 0.2
+  min_wall: 3.0
+  pocket_floor: 1.0
