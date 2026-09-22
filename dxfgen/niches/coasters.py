@@ -24,7 +24,14 @@ from ..core import geometry as geo
 from ..core.design import Contour, Design, Label, Part, Pocket
 from ..core.geometry import Point, Ring
 from ..core.layers import ENGRAVE
-from .base import Generator, GeneratorParams, arrange_grid, cutting_order_for, slugify, smallest_stock
+from .base import (
+    Generator,
+    GeneratorParams,
+    arrange_for_stock,
+    cutting_order_for,
+    slugify,
+    smallest_stock,
+)
 
 __all__ = ["CoasterShape", "Pattern", "CoasterParams", "CoasterGenerator"]
 
@@ -334,7 +341,7 @@ class CoasterGenerator(Generator):
             params: Coaster parameters.
 
         Returns:
-            The design, parts laid out in a grid on the sheet.
+            The design, laid out on the smallest board it will fit.
 
         Raises:
             ValueError: If the parameters are geometrically incompatible.
@@ -343,7 +350,7 @@ class CoasterGenerator(Generator):
         parts = [_coaster_part(params, index) for index in range(params.count)]
         if params.holder:
             parts.append(_holder_part(params, coaster))
-        arrange_grid(parts, params.gap)
+        parts, layout = arrange_for_stock(parts, params.gap)
 
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
@@ -367,7 +374,11 @@ class CoasterGenerator(Generator):
             thickness=params.thickness,
             sheet=smallest_stock(width, height),
             params=params.model_dump(mode="json"),
-            notes=self._notes(params),
+            notes=[
+                *self._notes(params),
+                f"The parts are laid out as {layout}, chosen because it needs "
+                f"the smallest board of the layouts tried.",
+            ],
             limits=params.validation_config(),
         )
         design.cutting_order = cutting_order_for(design)

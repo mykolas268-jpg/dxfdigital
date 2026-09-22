@@ -34,11 +34,21 @@ from .base import (
     Generator,
     GeneratorParams,
     apply_kerf,
-    arrange_grid,
+    arrange_for_stock,
     cutting_order_for,
     material_phrase,
     slugify,
     smallest_stock,
+)
+
+#: Sheet sizes a laser cutter actually has, smallest first.  The router
+#: stock list runs up to a 1220 x 2440 mm panel, which no hobby laser bed
+#: takes, and offering it would pick layouts nobody can cut.
+LASER_STOCK: tuple[tuple[float, float], ...] = (
+    (300.0, 200.0),
+    (400.0, 300.0),
+    (600.0, 400.0),
+    (900.0, 600.0),
 )
 
 __all__ = ["LidStyle", "BoxParams", "BoxGenerator"]
@@ -371,7 +381,7 @@ class BoxGenerator(Generator):
             *_lid_parts(params),
         ]
         parts = apply_kerf(parts, params)
-        arrange_grid(parts, params.gap, columns=3)
+        parts, layout = arrange_for_stock(parts, params.gap, sizes=LASER_STOCK)
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
         )
@@ -394,7 +404,11 @@ class BoxGenerator(Generator):
             thickness=thickness,
             sheet=smallest_stock(width, height),
             params=params.model_dump(mode="json"),
-            notes=self._notes(params, long_fingers),
+            notes=[
+                *self._notes(params, long_fingers),
+                f"The parts are laid out as {layout}, chosen because it needs "
+                f"the smallest sheet of the layouts tried.",
+            ],
             limits=params.validation_config(),
         )
         design.cutting_order = cutting_order_for(design)

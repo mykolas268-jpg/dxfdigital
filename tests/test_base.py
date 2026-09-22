@@ -20,9 +20,12 @@ from dxfgen.niches.base import (
     STOCK_SIZES,
     Generator,
     GeneratorParams,
+    arrange_for_stock,
+    arrange_grid,
     cutting_order_for,
     slugify,
     smallest_stock,
+    stock_needed,
 )
 
 
@@ -326,3 +329,88 @@ def test_a_run_that_cannot_fill_its_count_says_how_short_it_is(
     run = gen.sample_variants(40, seed=3, attempt_factor=1)
     assert run.attempts <= 40
     assert run.short == run.requested - len(run.designs) > 0
+
+
+# --------------------------------------------------------------------------- #
+# choosing a layout by the board it forces you to buy
+# --------------------------------------------------------------------------- #
+def _tile(name: str, width: float, height: float) -> Part:
+    """A plain rectangular part, for layout tests."""
+    return Part(name, geo.rect_ring(width, height, 0.0, 0.0))
+
+
+def test_a_layout_is_chosen_by_the_panel_it_needs() -> None:
+    """Four 125 mm tiles fit a 400x300 board as a square, not as a row."""
+    parts = [_tile(f"t{i}", 125.0, 125.0) for i in range(4)]
+    placed, how = arrange_for_stock(parts, 12.0)
+    assert stock_needed(placed) == (400.0, 300.0)
+    assert "2-column" in how
+
+
+def test_long_parts_are_stacked_rather_than_laid_end_to_end() -> None:
+    """Three 260 mm strips side by side would need a 900 mm board; stacked, 300."""
+    parts = [_tile(f"t{i}", 260.0, 40.0) for i in range(3)]
+    placed, how = arrange_for_stock(parts, 10.0)
+    assert stock_needed(placed) == (300.0, 200.0)
+    assert "1-column" in how
+
+
+def test_choosing_is_never_worse_than_the_default_grid() -> None:
+    """The default grid is one of the candidates, so it sets the ceiling."""
+    for count, side in ((2, 90.0), (4, 100.0), (5, 125.0), (7, 80.0)):
+        parts = [_tile(f"t{i}", side, side) for i in range(count)]
+        grid = [part.copy() for part in parts]
+        arrange_grid(grid, 12.0)
+        chosen, _ = arrange_for_stock(parts, 12.0)
+        gw, gh = stock_needed(grid)
+        cw, ch = stock_needed(chosen)
+        assert cw * ch <= gw * gh, f"{count} x {side} mm got worse"
+
+
+def test_the_input_order_is_kept() -> None:
+    """Part order is the order they are named, labelled and cut in."""
+    parts = [_tile("big", 200.0, 150.0), _tile("small", 60.0, 40.0), _tile("mid", 120.0, 90.0)]
+    placed, _ = arrange_for_stock(parts, 10.0)
+    assert [part.name for part in placed] == ["big", "small", "mid"]
+
+
+def test_the_parts_passed_in_are_not_moved() -> None:
+    parts = [_tile(f"t{i}", 100.0, 100.0) for i in range(4)]
+    before = [part.origin for part in parts]
+    arrange_for_stock(parts, 12.0)
+    assert [part.origin for part in parts] == before
+
+
+def test_a_chosen_layout_never_overlaps() -> None:
+    from shapely.geometry import Polygon
+
+    parts = [_tile("a", 180.0, 60.0), _tile("b", 90.0, 140.0), _tile("c", 70.0, 70.0)]
+    placed, _ = arrange_for_stock(parts, 10.0)
+    polygons = [Polygon(part.placed().outline) for part in placed]
+    for i, first in enumerate(polygons):
+        for second in polygons[i + 1 :]:
+            assert first.intersection(second).area == pytest.approx(0.0)
+
+
+def test_packing_is_skipped_for_repeated_names() -> None:
+    """The packer is matched back up by name, so it cannot handle duplicates."""
+    parts = [_tile("same", 100.0, 100.0) for _ in range(4)]
+    _, how = arrange_for_stock(parts, 12.0)
+    assert "grid" in how
+
+
+def test_packing_can_be_turned_off() -> None:
+    parts = [_tile(f"t{i}", 120.0, 60.0) for i in range(6)]
+    _, how = arrange_for_stock(parts, 10.0, pack=False)
+    assert "grid" in how
+
+
+def test_an_empty_layout_is_refused() -> None:
+    with pytest.raises(ValueError, match="nothing to arrange"):
+        arrange_for_stock([], 10.0)
+
+
+def test_stock_needed_reads_the_placed_positions() -> None:
+    parts = [_tile("a", 100.0, 100.0), _tile("b", 100.0, 100.0)]
+    arrange_grid(parts, 10.0, columns=2)
+    assert stock_needed(parts) == (300.0, 200.0)

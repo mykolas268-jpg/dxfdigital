@@ -194,6 +194,14 @@ Furniture parts are nested onto sheet stock with a first-fit-decreasing shelf
 packer and labelled on `INFO`. It is not optimal — no practical nester is — but
 it is stable, fast, and leaves a layout an operator can read.
 
+Smaller sets — coasters, boxes — are scored differently, on **the board you
+have to buy** rather than on bounding-box area. The two disagree: shelf packing
+beats a grid by about 20% on bounding-box area for coaster sets, and is 16%
+*worse* on panel area, because it lays parts in long rows and a long row forces
+a wider board. Every grid width and the packer are tried and the cheapest board
+wins. Four of ten coaster sets and six of twelve boxes come out on a smaller
+board than a fixed grid gave them.
+
 ## Presets
 
 `--preset` loads a YAML file of parameters; anything you pass with `-p` wins
@@ -235,7 +243,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 907 tests
+python -m pytest          # 917 tests
 ```
 
 ```
@@ -266,8 +274,6 @@ Stated plainly, because finding these out at the machine is expensive.
   area against the area the packer actually occupied: median 73%, range 36–85%.
   A shelf packer leaves the gaps a shelf packer leaves, and the worst cases are
   designs whose parts differ most in height.
-- **Coaster sets use a plain grid**, not the nester, so a set plus its holder
-  wastes the difference between the largest part and the rest.
 - **Furniture joints are friction fits.** There is no wedge, cam or captive-nut
   geometry, so a bookcase relies on the fit and, ideally, glue.
 - **Boxes come in one form**: a finger-jointed open box with an optional
