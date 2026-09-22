@@ -1,8 +1,17 @@
 # Flat-pack stock: 18 mm birch plywood on a hobby router with a 1/4" cutter.
 #
-# Use with:  dxfgen make furniture --preset router-18mm-ply
 # Any -p override wins over the values here.
 name: Router, 18 mm birch plywood
+# A worked example, run by the test suite so it cannot go stale:
+#   dxfgen make furniture --preset router-18mm-ply -p form=shelf -p width=800 -p depth=320 -p height=1100
+example:
+  niche: furniture
+  params:
+    form: shelf
+    width: 800
+    depth: 320
+    height: 1100
+
 params:
   mode: router
   material: birch plywood

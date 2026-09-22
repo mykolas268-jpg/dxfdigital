@@ -261,13 +261,13 @@ board than a fixed grid gave them.
 `--preset` loads a YAML file of parameters; anything you pass with `-p` wins
 over it.
 
-| preset | for |
-|---|---|
-| `router-18mm-ply` | flat-pack work, 18 mm birch ply, ¼ in cutter |
-| `router-19mm-hardwood` | boards and trays, ¾ in hardwood |
-| `router-12mm-cutter` | a big cutter that will not reach small corners |
-| `laser-3mm-ply` | 3 mm birch ply on a CO₂ laser |
-| `laser-6mm-ply` | 6 mm ply, wider kerf |
+| preset | for | a worked example, run by the test suite |
+|---|---|---|
+| `laser-3mm-ply` | Laser, 3 mm birch plywood | `dxfgen make boxes --preset laser-3mm-ply -p width=180 -p depth=130 -p height=90` |
+| `laser-6mm-ply` | Laser, 6 mm birch plywood | `dxfgen make ornaments --preset laser-6mm-ply -p width=90` |
+| `router-12mm-cutter` | Router, 12 mm cutter | `dxfgen make trays --preset router-12mm-cutter -p length=520` |
+| `router-18mm-ply` | Router, 18 mm birch plywood | `dxfgen make furniture --preset router-18mm-ply -p form=shelf -p width=800 -p depth=320 -p height=1100` |
+| `router-19mm-hardwood` | Router, 19 mm hardwood | `dxfgen make boards --preset router-19mm-hardwood -p length=420 -p width=280` |
 
 They live in `dxfgen/configs/`. Copy one and edit it; `--preset ./mine.yaml`
 takes a path.
@@ -297,7 +297,7 @@ dry. MDF, acrylic and damp stock all behave differently.
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest          # 1076 tests
+python -m pytest          # 1088 tests
 ```
 
 ```

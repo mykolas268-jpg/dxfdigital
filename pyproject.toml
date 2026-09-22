@@ -30,6 +30,12 @@ dxfgen = "dxfgen.cli:app"
 [tool.setuptools.packages.find]
 include = ["dxfgen*"]
 
+# Declared explicitly rather than left to include-package-data, which without
+# a MANIFEST.in or a VCS plugin ships no non-Python files at all.  Omit this
+# and `pip install dxfgen` gives you a --preset that finds nothing.
+[tool.setuptools.package-data]
+dxfgen = ["configs/*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

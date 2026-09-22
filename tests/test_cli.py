@@ -278,3 +278,78 @@ def test_several_files_are_all_checked(cut_file: Path) -> None:
     result = run("validate", str(cut_file), str(cut_file))
     assert result.exit_code == EXIT_OK
     assert result.stdout.count("INFO_EXTENTS") == 2
+
+
+# --------------------------------------------------------------------------- #
+# the presets that ship with the package
+# --------------------------------------------------------------------------- #
+def _shipped_presets() -> list[Path]:
+    import dxfgen
+
+    return sorted((Path(dxfgen.__file__).parent / "configs").glob("*.yaml"))
+
+
+def test_presets_ship_with_the_package() -> None:
+    """Non-Python files need declaring; without that a wheel carries none."""
+    import tomllib
+
+    root = Path(__file__).resolve().parent.parent
+    config = tomllib.loads((root / "pyproject.toml").read_text())
+    data = config["tool"]["setuptools"]["package-data"]
+    assert "configs/*.yaml" in data["dxfgen"]
+    assert _shipped_presets(), "no presets found beside the package"
+
+
+@pytest.mark.parametrize(
+    "preset", [p.stem for p in _shipped_presets()], ids=lambda s: s
+)
+def test_every_shipped_preset_cuts_its_own_example(
+    preset: str, tmp_path: Path
+) -> None:
+    """Each preset carries a worked example, and it has to actually work.
+
+    A 12 mm cutter needs a wide rim and a wide rim needs a big tray, so a
+    preset's example is not interchangeable with any other's. Running the one
+    the file documents is what stops it going stale - the 12 mm preset used to
+    name a command that did not build.
+    """
+    import yaml
+
+    import dxfgen
+
+    path = Path(dxfgen.__file__).parent / "configs" / f"{preset}.yaml"
+    loaded = yaml.safe_load(path.read_text())
+    assert isinstance(loaded, dict) and loaded.get("name")
+    assert isinstance(loaded.get("params"), dict) and loaded["params"]
+
+    example = loaded.get("example")
+    assert example, f"{preset} ships no worked example"
+    args = ["make", example["niche"], "--preset", preset]
+    for key, value in (example.get("params") or {}).items():
+        args += ["-p", f"{key}={value}"]
+    result = run(*args, "-o", str(tmp_path), "-f", "dxf")
+    assert result.exit_code == EXIT_OK, result.output
+
+
+@pytest.mark.parametrize(
+    "preset", [p.stem for p in _shipped_presets()], ids=lambda s: s
+)
+def test_a_preset_does_not_leak_its_example_into_the_parameters(
+    preset: str, tmp_path: Path
+) -> None:
+    """The example is documentation; only `params` reaches the generator."""
+    import dxfgen
+    import yaml
+
+    path = Path(dxfgen.__file__).parent / "configs" / f"{preset}.yaml"
+    loaded = yaml.safe_load(path.read_text())
+    assert "example" not in loaded["params"]
+
+
+def test_a_preset_is_found_by_bare_name_and_by_path(tmp_path: Path) -> None:
+    import dxfgen
+
+    shipped = Path(dxfgen.__file__).parent / "configs" / "laser-3mm-ply.yaml"
+    by_name = run("make", "boxes", "--preset", "laser-3mm-ply", "-o", str(tmp_path / "a"), "-f", "dxf")
+    by_path = run("make", "boxes", "--preset", str(shipped), "-o", str(tmp_path / "b"), "-f", "dxf")
+    assert by_name.exit_code == EXIT_OK and by_path.exit_code == EXIT_OK

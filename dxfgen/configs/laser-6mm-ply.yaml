@@ -1,7 +1,13 @@
 # 6 mm ply: stiffer boxes and ornaments, wider kerf because the beam waists.
 #
-# Use with:  dxfgen make ornaments --preset laser-6mm-ply
 name: Laser, 6 mm birch plywood
+# A worked example, run by the test suite so it cannot go stale:
+#   dxfgen make ornaments --preset laser-6mm-ply -p width=90
+example:
+  niche: ornaments
+  params:
+    width: 90
+
 params:
   mode: laser
   material: 6 mm birch ply

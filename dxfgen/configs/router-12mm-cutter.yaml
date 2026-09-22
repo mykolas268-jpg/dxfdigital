@@ -1,8 +1,14 @@
 # A 12 mm cutter clears stock fast but will not reach a small inside corner.
 # Designs that cannot take it are refused rather than quietly rounded off.
 #
-# Use with:  dxfgen make trays --preset router-12mm-cutter
 name: Router, 12 mm cutter
+# A worked example, run by the test suite so it cannot go stale:
+#   dxfgen make trays --preset router-12mm-cutter -p length=520
+example:
+  niche: trays
+  params:
+    length: 520
+
 params:
   mode: router
   material: oak
