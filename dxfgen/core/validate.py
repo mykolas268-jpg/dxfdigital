@@ -34,10 +34,9 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from shapely.geometry import LinearRing, Point as ShapelyPoint, Polygon
-from shapely.ops import unary_union
 
 from . import geometry as geo
-from .design import Design, Machine, Mode, Part
+from .design import Design, Machine, Part
 from .limits import ValidationConfig
 from .geometry import Point, Ring
 from .layers import (

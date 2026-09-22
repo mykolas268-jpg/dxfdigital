@@ -26,7 +26,7 @@ from ezdxf.document import Drawing
 from ezdxf.enums import TextEntityAlignment
 
 from .design import Design, Machine, Mode
-from .layers import INFO, layer_def
+from .layers import layer_def
 from .validate import Report, ValidationConfig, validate_design
 
 __all__ = [

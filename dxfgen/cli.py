@@ -14,7 +14,6 @@ wrong (unknown niche, bad parameter).
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -23,7 +22,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from .bundles.builder import DEFAULT_SELLER, Bundle, build_all, build_bundle, write_design
+from .bundles.builder import DEFAULT_SELLER, Bundle, build_all, write_design
 from .core.design import Machine, Mode
 from .core.export_pdf import PAPER_SIZES, A4, PaperSize
 from .core.validate import Report, Severity, ValidationError as GeometryInvalid
