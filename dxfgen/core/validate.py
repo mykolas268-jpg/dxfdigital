@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from shapely.geometry import LinearRing, Point as ShapelyPoint, Polygon
+from shapely.ops import nearest_points
 
 from . import geometry as geo
 from .design import Design, Machine, Part
@@ -556,6 +557,60 @@ def _check_depths(report: Report, design: Design, cfg: ValidationConfig) -> None
                 )
 
 
+def _check_part_gap(
+    report: Report,
+    name_a: str,
+    name_b: str,
+    pa: Polygon,
+    pb: Polygon,
+    minimum: float,
+    machine: Machine,
+) -> None:
+    """Are two neighbouring parts far enough apart for the cutter?
+
+    Checking only for overlap misses the expensive case: two parts that do
+    not touch, but sit closer than the cutter is wide, so cutting either
+    outline takes a bite out of the other.
+
+    Args:
+        report: Where findings go.
+        name_a: The first part's name, for the message.
+        name_b: The second part's name.
+        pa: The first part's outline.
+        pb: The second part's outline.
+        minimum: The least acceptable distance between them, mm.
+        machine: The machine, for the message.
+    """
+    if minimum <= 0.0:
+        return
+    # Most pairs are nowhere near each other; the bounding boxes say so
+    # without the exact distance.
+    ax0, ay0, ax1, ay1 = pa.bounds
+    bx0, by0, bx1, by1 = pb.bounds
+    if max(bx0 - ax1, ax0 - bx1, by0 - ay1, ay0 - by1) >= minimum:
+        return
+    gap = pa.distance(pb)
+    if gap >= minimum - 1e-6:
+        return
+    near_a, near_b = nearest_points(pa, pb)
+    bite = machine.min_part_gap - gap
+    # Below a hundredth the bite is float noise from the layout arithmetic,
+    # and "cuts 0.00 mm into the other" would be a confusing thing to say.
+    consequence = (
+        f"cutting either outline with the {machine.tool_diameter:g} mm cutter "
+        f"cuts {bite:.2f} mm into the other"
+        if bite >= 0.005
+        else "that leaves no allowance for curves stored as chords"
+    )
+    report.add(
+        "E_PART_GAP",
+        Severity.ERROR,
+        f"parts {name_a!r} and {name_b!r} are only {gap:.2f} mm apart; "
+        f"{consequence}; space parts at least {minimum:.2f} mm apart",
+        location=((near_a.x + near_b.x) / 2.0, (near_a.y + near_b.y) / 2.0),
+    )
+
+
 def _check_design_layout(
     report: Report, design: Design, cfg: ValidationConfig
 ) -> None:
@@ -582,6 +637,7 @@ def _check_design_layout(
             f"layout is {width:.1f}x{height:.1f} mm and does not fit the "
             f"declared {sw:g}x{sh:g} mm sheet in either orientation",
         )
+    minimum = design.machine.min_layout_gap
     for a, b in combinations(parts, 2):
         pa, pb = _safe_polygon(a.outline), _safe_polygon(b.outline)
         inter = pa.intersection(pb)
@@ -593,6 +649,8 @@ def _check_design_layout(
                 f"{inter.area:.2f} mm^2",
                 location=(inter.centroid.x, inter.centroid.y),
             )
+            continue
+        _check_part_gap(report, a.name, b.name, pa, pb, minimum, design.machine)
 
 
 # --------------------------------------------------------------------------- #
@@ -685,6 +743,68 @@ def _check_file_reachability(
         )
 
 
+def _check_file_spacing(
+    report: Report, rings: Sequence[tuple[Ring, str]], machine: Machine
+) -> None:
+    """Are the parts in a file far enough apart for the cutter?
+
+    A file has no part structure, so each closed contour on CUT_OUTSIDE is
+    taken as one part's outline.  A pair where one outline stands inside the
+    other is left alone: that is a part cut from another's waste, and whether
+    the cutter clears it depends on the cutout between them.
+
+    Args:
+        report: Where findings go.
+        rings: Every closed contour in the file, with its layer.
+        machine: The machine to judge against.
+    """
+    minimum = machine.min_part_gap
+    outlines = [
+        poly
+        for poly in (_safe_polygon(ring) for ring, layer in rings if layer == CUT_OUTSIDE)
+        if not poly.is_empty
+    ]
+    # Sweep along x so a sheet of many parts does not cost every pair.
+    outlines.sort(key=lambda poly: poly.bounds)
+    for index, pa in enumerate(outlines):
+        ax0, ay0, ax1, ay1 = pa.bounds
+        for pb in outlines[index + 1 :]:
+            bx0, by0, bx1, by1 = pb.bounds
+            if bx0 - ax1 >= minimum:
+                break
+            if max(by0 - ay1, ay0 - by1) >= minimum:
+                continue
+            if pa.intersects(pb):
+                if pa.contains(pb) or pb.contains(pa):
+                    continue
+                inter = pa.intersection(pb)
+                if inter.area > 1e-6:
+                    report.add(
+                        "E_PART_OVERLAP",
+                        Severity.ERROR,
+                        f"two outlines on {CUT_OUTSIDE} overlap by "
+                        f"{inter.area:.2f} mm^2",
+                        location=(inter.centroid.x, inter.centroid.y),
+                    )
+                    continue
+            if minimum <= 0.0:
+                continue
+            gap = pa.distance(pb)
+            # A file's curves may be chords or arcs, and a hair under the
+            # cutter diameter is a part spaced at exactly the cutter diameter.
+            if gap >= minimum - 0.005:
+                continue
+            near_a, near_b = nearest_points(pa, pb)
+            report.add(
+                "E_PART_GAP",
+                Severity.ERROR,
+                f"two parts on {CUT_OUTSIDE} are only {gap:.2f} mm apart; "
+                f"cutting either outline with the {machine.tool_diameter:g} mm "
+                f"cutter cuts {minimum - gap:.2f} mm into the other",
+                location=((near_a.x + near_b.x) / 2.0, (near_a.y + near_b.y) / 2.0),
+            )
+
+
 def validate_dxf_file(
     path: str | Path,
     machine: Machine | None = None,
@@ -740,6 +860,7 @@ def validate_dxf_file(
     from .export_dxf import machine_from_document
 
     mach = machine or machine_from_document(doc)
+    cutter_known = mach is not None
     if mach is None:
         report.add(
             "INFO_NO_MACHINE",
@@ -887,6 +1008,9 @@ def validate_dxf_file(
             )
         else:
             seen[sig] = layer
+
+    if cutter_known:
+        _check_file_spacing(report, rings, mach)
 
     if all_points:
         x0, y0, x1, y1 = geo.bbox(all_points)

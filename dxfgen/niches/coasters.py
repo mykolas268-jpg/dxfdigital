@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import random
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -63,6 +64,9 @@ MIN_SIZE = 80.0
 class CoasterParams(GeneratorParams):
     """Parameters for a coaster set."""
 
+    SPACING_FIELD: ClassVar[str | None] = "gap"
+    NOMINAL_SPACING: ClassVar[float] = 12.0
+
     size: float = Field(100.0, ge=MIN_SIZE, le=160.0, description="coaster size across in mm")
     count: int = Field(4, ge=1, le=12, description="how many coasters in the set")
     shape: CoasterShape = Field(CoasterShape.ROUND, description="coaster outline")
@@ -95,7 +99,13 @@ class CoasterParams(GeneratorParams):
     holder_push_hole: float = Field(
         32.0, ge=0.0, le=80.0, description="push-out hole diameter in the holder floor, 0 for none"
     )
-    gap: float = Field(12.0, ge=5.0, le=60.0, description="spacing between parts on the sheet, mm")
+    gap: float | None = Field(
+        None,
+        ge=5.0,
+        le=60.0,
+        description="spacing between parts on the sheet in mm; unset = 12, "
+        "or the cutter + 5 on a router if that is more",
+    )
     label: bool = Field(True, description="add an INFO label to the holder")
 
     @model_validator(mode="after")
@@ -350,7 +360,7 @@ class CoasterGenerator(Generator):
         parts = [_coaster_part(params, index) for index in range(params.count)]
         if params.holder:
             parts.append(_holder_part(params, coaster))
-        parts, layout = arrange_for_stock(parts, params.gap)
+        parts, layout = arrange_for_stock(parts, params.part_gap())
 
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]

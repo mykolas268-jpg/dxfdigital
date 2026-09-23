@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import random
 from enum import Enum
-from typing import Sequence
+from typing import ClassVar, Sequence
 
 from pydantic import Field, model_validator
 
@@ -70,6 +70,9 @@ class FurnitureParams(GeneratorParams):
     1220 x 2440 mm panel.
     """
 
+    SPACING_FIELD: ClassVar[str | None] = "sheet_gap"
+    NOMINAL_SPACING: ClassVar[float] = 14.0
+
     form: FurnitureForm = Field(FurnitureForm.SHELF, description="which piece to build")
     thickness: float = Field(18.0, gt=0, le=40, description="sheet thickness in mm")
     material: str = Field(
@@ -101,8 +104,12 @@ class FurnitureParams(GeneratorParams):
         12.0, ge=0.0, le=60.0, description="corner radius on the panels in mm"
     )
     relief: bool = Field(True, description="dogbone the mortises and inside corners")
-    sheet_gap: float = Field(
-        14.0, ge=6.0, le=60.0, description="space between nested parts in mm"
+    sheet_gap: float | None = Field(
+        None,
+        ge=6.0,
+        le=60.0,
+        description="space between nested parts in mm; unset = 14, or the "
+        "cutter + 5 on a router if that is more",
     )
 
     @model_validator(mode="after")
@@ -714,7 +721,7 @@ class FurnitureGenerator(Generator):
         else:
             parts = _cross_table(params)
 
-        sheets = nest_parts(parts, SHEET, gap=params.sheet_gap)
+        sheets = nest_parts(parts, SHEET, gap=params.part_gap())
         placed: list[Part] = []
         for index, sheet_parts in enumerate(sheets):
             offset = index * (SHEET[0] + SHEET_GAP)

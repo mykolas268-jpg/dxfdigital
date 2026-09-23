@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import random
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -55,6 +56,9 @@ _FORM_WIDTH: dict[SeasonalForm, tuple[float, float]] = {
 class SeasonalParams(GeneratorParams):
     """Parameters for a seasonal piece."""
 
+    SPACING_FIELD: ClassVar[str | None] = "gap"
+    NOMINAL_SPACING: ClassVar[float] = 12.0
+
     shape: str = Field("pumpkin", description=f"one of: {', '.join(shape_names())}")
     form: SeasonalForm = Field(SeasonalForm.PLAQUE, description="what to make of it")
     width: float = Field(300.0, ge=80.0, le=600.0, description="overall width in mm")
@@ -73,7 +77,13 @@ class SeasonalParams(GeneratorParams):
     pocket_depth: float = Field(
         8.0, gt=0.0, le=30.0, description="tray recess depth in mm"
     )
-    gap: float = Field(12.0, ge=5.0, le=60.0, description="spacing between parts, mm")
+    gap: float | None = Field(
+        None,
+        ge=5.0,
+        le=60.0,
+        description="spacing between parts in mm; unset = 12, or the "
+        "cutter + 5 on a router if that is more",
+    )
     label: bool = Field(True, description="add an INFO label")
 
     @model_validator(mode="after")
@@ -242,7 +252,7 @@ class SeasonalGenerator(Generator):
                 parts[0].labels.append(
                     Label(text, ((x0 + x1) / 2.0, y0 + (y1 - y0) * 0.12), 4.0, align="center")
                 )
-        arrange_grid(parts, params.gap)
+        arrange_grid(parts, params.part_gap())
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
         )

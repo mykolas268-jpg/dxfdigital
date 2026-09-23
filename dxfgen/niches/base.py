@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Iterable, Mapping, Sequence
 
 from annotated_types import Ge, Gt, Le, Lt, MaxLen, MinLen
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..core.design import Design, Label, Machine, Mode, Part
 from ..core.layers import (
@@ -58,10 +58,17 @@ __all__ = [
     "material_phrase",
     "slugify",
     "GOLDEN",
+    "SCRAP_WEB",
 ]
 
 #: The golden ratio, the default proportion for outlines that need one.
 GOLDEN: float = 1.6180339887498949
+
+#: Waste left standing between neighbouring profile cuts when the spacing is
+#: chosen for you on a router.  A cutter diameter apart is the least that
+#: does not cut into the next part, but at exactly that the two channels meet
+#: and nothing is left holding the waste together around the parts.
+SCRAP_WEB: float = 5.0
 
 #: Common stock panel sizes in mm, smallest first.  Declaring the smallest one
 #: a design fits tells the buyer what to go and buy.
@@ -487,6 +494,12 @@ class GeneratorParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
+    #: The field holding the spacing between parts on the sheet, in niches
+    #: that lay more than one part out; ``None`` where there is only one.
+    SPACING_FIELD: ClassVar[str | None] = None
+    #: The spacing used when that field is left unset.
+    NOMINAL_SPACING: ClassVar[float] = 12.0
+
     mode: Mode = Field(
         Mode.ROUTER, description="router cuts on the line, laser compensates kerf"
     )
@@ -516,6 +529,49 @@ class GeneratorParams(BaseModel):
             kerf=self.kerf,
             clearance=self.clearance,
         )
+
+    def part_gap(self) -> float:
+        """Spacing between neighbouring parts on the sheet, in mm.
+
+        An explicit spacing is used as given; :meth:`_check_part_gap` has
+        already refused one the cutter cannot clear.  Left unset it is the
+        niche's nominal spacing, widened on a router to the cutter diameter
+        plus :data:`SCRAP_WEB` - so a 12.7 mm cutter gets 17.7 mm rather
+        than the 12 mm that suits a 6.35 mm one and would be cut through.
+        Worked out when asked rather than stored, so that it follows a
+        change of machine.
+
+        Returns:
+            The spacing, mm.
+        """
+        requested = getattr(self, self.SPACING_FIELD) if self.SPACING_FIELD else None
+        if requested is not None:
+            return float(requested)
+        if self.machine().is_laser:
+            return self.NOMINAL_SPACING
+        return max(self.NOMINAL_SPACING, self.tool_diameter + SCRAP_WEB)
+
+    @model_validator(mode="after")
+    def _check_part_gap(self) -> "GeneratorParams":
+        """Refuse an explicit spacing the cutter would cut through."""
+        if self.SPACING_FIELD is None:
+            return self
+        requested = getattr(self, self.SPACING_FIELD)
+        minimum = self.machine().min_layout_gap
+        if requested is not None and requested < minimum - 1e-9:
+            bite = self.machine().min_part_gap - requested
+            raise ValueError(
+                f"{self.SPACING_FIELD}={requested:g} mm is too narrow for a "
+                f"{self.tool_diameter:g} mm cutter"
+                + (
+                    f", which would cut {bite:.2f} mm into the neighbouring part"
+                    if bite >= 0.005
+                    else ", with no allowance for curves stored as chords"
+                )
+                + f"; use at least {minimum:g} mm, or leave it unset for "
+                f"{max(self.NOMINAL_SPACING, self.tool_diameter + SCRAP_WEB):g} mm"
+            )
+        return self
 
     def validation_config(self) -> ValidationConfig:
         """Build the validator limits these parameters imply.

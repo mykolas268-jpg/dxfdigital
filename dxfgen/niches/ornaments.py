@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -55,6 +56,9 @@ class OrnamentParams(GeneratorParams):
     Machine defaults are laser in thin sheet, which is what these are.
     """
 
+    SPACING_FIELD: ClassVar[str | None] = "gap"
+    NOMINAL_SPACING: ClassVar[float] = 6.0
+
     mode: Mode = Field(Mode.LASER, description="router or laser; ornaments are laser work")
     material: str = Field(
         "birch ply", min_length=1, max_length=60, description="material description"
@@ -82,7 +86,13 @@ class OrnamentParams(GeneratorParams):
     border_inset: float = Field(
         6.0, ge=2.0, le=20.0, description="engraved border inset in mm"
     )
-    gap: float = Field(6.0, ge=2.0, le=30.0, description="spacing between parts, mm")
+    gap: float | None = Field(
+        None,
+        ge=2.0,
+        le=30.0,
+        description="spacing between parts in mm; unset = 6, or the "
+        "cutter + 5 on a router",
+    )
 
     @model_validator(mode="after")
     def _check_shapes(self) -> "OrnamentParams":
@@ -163,7 +173,8 @@ class OrnamentGenerator(Generator):
             parts.append(part)
         parts = apply_kerf(parts, params)
 
-        sheets = nest_parts(parts, ORNAMENT_SHEET, gap=params.gap, margin=params.gap)
+        gap = params.part_gap()
+        sheets = nest_parts(parts, ORNAMENT_SHEET, gap=gap, margin=gap)
         if len(sheets) > 1:
             raise ValueError(
                 f"{len(params.shapes)} shapes x {params.copies} copies at "

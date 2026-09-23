@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import random
 from enum import Enum
-from typing import Sequence
+from typing import ClassVar, Sequence
 
 from pydantic import Field, model_validator
 
@@ -77,6 +77,9 @@ class BoxParams(GeneratorParams):
     every sensible box refuse itself.
     """
 
+    SPACING_FIELD: ClassVar[str | None] = "gap"
+    NOMINAL_SPACING: ClassVar[float] = 8.0
+
     mode: Mode = Field(Mode.LASER, description="router or laser; boxes are laser work")
     material: str = Field(
         "birch ply", min_length=1, max_length=60, description="material description"
@@ -115,7 +118,13 @@ class BoxParams(GeneratorParams):
     lid_clearance: float = Field(
         0.4, ge=0.0, le=2.0, description="gap around the lid locator in mm"
     )
-    gap: float = Field(8.0, ge=3.0, le=40.0, description="spacing between parts on the sheet, mm")
+    gap: float | None = Field(
+        None,
+        ge=3.0,
+        le=40.0,
+        description="spacing between parts on the sheet in mm; unset = 8, "
+        "or the cutter + 5 on a router",
+    )
     label: bool = Field(True, description="add an INFO label to the floor")
 
     @model_validator(mode="after")
@@ -676,7 +685,7 @@ class BoxGenerator(Generator):
             *_lid_parts(params),
         ]
         parts = apply_kerf(parts, params)
-        parts, layout = arrange_for_stock(parts, params.gap, sizes=LASER_STOCK)
+        parts, layout = arrange_for_stock(parts, params.part_gap(), sizes=LASER_STOCK)
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
         )

@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import random
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -77,6 +78,9 @@ class BackStyle(str, Enum):
 class StandParams(GeneratorParams):
     """Parameters for a slot-together dock."""
 
+    SPACING_FIELD: ClassVar[str | None] = "gap"
+    NOMINAL_SPACING: ClassVar[float] = 12.0
+
     size: StandSize = Field(StandSize.PHONE, description="phone or tablet proportions")
     width: float | None = Field(
         None, ge=50.0, le=260.0, description="dock width in mm; default per size"
@@ -118,7 +122,13 @@ class StandParams(GeneratorParams):
             "cutter cannot cut a square mortise"
         ),
     )
-    gap: float = Field(12.0, ge=5.0, le=60.0, description="spacing between parts on the sheet, mm")
+    gap: float | None = Field(
+        None,
+        ge=5.0,
+        le=60.0,
+        description="spacing between parts on the sheet in mm; unset = 12, "
+        "or the cutter + 5 on a router if that is more",
+    )
     label: bool = Field(True, description="add an INFO label to the base")
 
     @model_validator(mode="after")
@@ -513,7 +523,7 @@ class StandGenerator(Generator):
             ],
             params,
         )
-        arrange_grid(parts, params.gap, columns=2)
+        arrange_grid(parts, params.part_gap(), columns=2)
         width, height = geo.size_of(
             [point for part in parts for point in part.placed().outline]
         )

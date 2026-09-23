@@ -94,6 +94,31 @@ class Machine:
         """``True`` in laser mode."""
         return self.mode is Mode.LASER
 
+    @property
+    def min_part_gap(self) -> float:
+        """The least distance between two finished parts that cuts neither, mm.
+
+        A router cuts a channel a full cutter diameter wide outside every
+        profile, so a neighbour closer than that is cut into by the toolpath:
+        at 5 mm apart a 6.35 mm cutter takes 1.35 mm off the next part.  A
+        laser's kerf is compensated into each part, so two compensated
+        outlines may even share a line, and only an overlap is wrong.
+        """
+        return 0.0 if self.is_laser else self.tool_diameter
+
+    @property
+    def min_layout_gap(self) -> float:
+        """The least spacing to lay stored outlines out at, mm.
+
+        Outlines are chords of their curves and sit up to
+        :data:`~dxfgen.core.geometry.ARC_TOLERANCE` off the true curve, so
+        a layout judged on the chords needs that much in hand for each of the
+        two parts to guarantee :attr:`min_part_gap` between the real ones.
+        """
+        if self.is_laser:
+            return 0.0
+        return self.min_part_gap + 2.0 * geo.ARC_TOLERANCE
+
     def slot_width(self, thickness: float) -> float:
         """Drawn width of a slot that accepts ``thickness`` material.
 
