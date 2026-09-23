@@ -261,6 +261,60 @@ def test_validate_judges_against_the_cutter_it_is_given(cut_file: Path) -> None:
     assert coarse.output != fine.output
 
 
+@pytest.fixture(scope="module")
+def laser_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A finger-jointed box, which only exists in laser mode."""
+    root = tmp_path_factory.mktemp("laser")
+    result = runner.invoke(app, ["make", "boxes", "-o", str(root), "-f", "dxf"])
+    assert result.exit_code == EXIT_OK, result.output
+    return next(root.glob("boxes/*/*.dxf"))
+
+
+def test_a_laser_file_passes_without_flags(laser_file: Path) -> None:
+    """The file says it is a laser file, so router rules must not be applied.
+
+    Every finger joint has inside corners no cutter can reach, so judging one
+    as a router file flags the whole box.  Defaulting --mode to router made
+    this tool call its own output unmachinable.
+    """
+    result = run("validate", str(laser_file))
+    assert result.exit_code == EXIT_OK, result.output
+    assert "E_TOOL_UNREACHABLE" not in result.stdout
+    assert "E_PROFILE_TOO_TIGHT" not in result.stdout
+
+
+def test_mode_flag_overrides_what_the_file_says(laser_file: Path) -> None:
+    """Asked for router rules on a laser file, it applies them and complains."""
+    result = run("validate", str(laser_file), "--mode", "router")
+    assert result.exit_code == EXIT_FAILED
+    assert "E_TOOL_UNREACHABLE" in result.stdout
+
+
+def test_tool_flag_alone_leaves_the_recorded_mode_alone(laser_file: Path) -> None:
+    """--tool names a cutter; it does not turn a laser file into a router one."""
+    result = run("validate", str(laser_file), "--tool", "3")
+    assert result.exit_code == EXIT_OK, result.output
+
+
+def test_a_file_without_provenance_is_not_judged_against_a_guess(
+    tmp_path: Path,
+) -> None:
+    """Somebody else's file records no machine, so the cutter checks are skipped."""
+    import ezdxf
+
+    doc = ezdxf.new(setup=True)
+    doc.header["$INSUNITS"] = 4
+    doc.modelspace().add_lwpolyline(
+        [(0, 0), (50, 0), (50, 30), (0, 30)], close=True, dxfattribs={"layer": "CUT_OUTSIDE"}
+    )
+    foreign = tmp_path / "foreign.dxf"
+    doc.saveas(str(foreign))
+
+    result = run("validate", str(foreign))
+    assert result.exit_code == EXIT_OK, result.output
+    assert "INFO_NO_MACHINE" in result.stdout
+
+
 def test_a_broken_file_fails(tmp_path: Path) -> None:
     broken = tmp_path / "broken.dxf"
     broken.write_text("this is not a DXF file at all\n")
