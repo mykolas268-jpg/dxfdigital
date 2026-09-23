@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Pushing twice in quick succession leaves the first run doing work nobody
+# will read, so the newer run cancels it.  A push to a branch with an open
+# pull request still produces two runs, one per event, because their refs
+# differ; that is the cost of checking both, and the suite is four minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    # The suite takes about four minutes locally; anything past this is a hang,
+    # not a slow runner.
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # The floor pyproject.toml declares in requires-python.
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package and its test dependencies
+        # Installing the project itself, rather than requirements.txt, is what
+        # makes the packaged configs importable the way a buyer's install is.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the test suite
+        run: python -m pytest
